@@ -21,7 +21,7 @@ use rustls_pemfile::{ certs, pkcs8_private_keys };
 use lazy_static::lazy_static;
 use governor::{ RateLimiter, Quota, state::{ InMemoryState, NotKeyed }, clock::DefaultClock };
 
-use log::{ info, warn, error };
+use log::{ info, warn, error, debug };
 
 lazy_static! {
     static ref CONNECTION_LIMITER: RateLimiter<NotKeyed, InMemoryState, DefaultClock> = RateLimiter::direct(Quota::per_second(NonZeroU32::new(10).unwrap()));
@@ -71,8 +71,6 @@ impl Server {
     pub fn new(addr: String, agent: Arc<AIAgent>, api_key: Option<String>, args: Args) -> Self {
         let inner_agent = (*agent).clone();
         let agent_arc = Arc::new(Mutex::new(inner_agent));
-
-        // treat an empty string the same as no API key
         let api_key = api_key.filter(|k| !k.trim().is_empty());
 
         if api_key.is_some() {
@@ -87,7 +85,6 @@ impl Server {
     pub async fn run(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         let listener = TcpListener::bind(&self.addr).await?;
 
-        // Use enable_tls flag as well as cert/key presence
         let protocol = if
             self.args.enable_tls &&
             self.args.tls_cert_path.is_some() &&
@@ -99,7 +96,6 @@ impl Server {
         };
         info!("{} server listening on: {}", protocol.to_uppercase(), self.addr);
 
-        // Only attempt to load TLS config when enable_tls is true
         let tls_acceptor = if self.args.enable_tls {
             match (&self.args.tls_cert_path, &self.args.tls_key_path) {
                 (Some(cert_path), Some(key_path)) => {
@@ -180,42 +176,54 @@ impl Server {
             req: &Request,
             response: Response
         | -> Result<Response, HttpResponse<Option<String>>> {
-            info!("Processing WebSocket handshake request from {}", peer);
-            // only enforce auth if there’s actually a non-empty key
-            if let Some(ref required_key) = required_api_key {
-                let provided_key = req
-                    .headers()
-                    .get("X-API-Key")
-                    .and_then(|val| val.to_str().ok());
+            info!("Handshake from {}", peer);
 
-                if provided_key != Some(required_key.as_str()) {
-                    warn!("Authentication failed for {}: Invalid or missing API Key", peer);
-                    let reject_response = HttpResponse::builder()
+            let mut provided = req
+                .headers()
+                .get("X-API-Key")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+
+            if provided.is_none() {
+                if let Some(q) = req.uri().query() {
+                    for pair in q.split('&') {
+                        let mut kv = pair.splitn(2, '=');
+                        if kv.next() == Some("api_key") {
+                            provided = kv.next().map(|v| v.to_string());
+                            break;
+                        }
+                    }
+                }
+            }
+
+            debug!("Client provided API key: {:?}", provided);
+
+            if let Some(ref required) = required_api_key {
+                if provided.as_deref() != Some(required.as_str()) {
+                    warn!("{}: bad or missing API key", peer);
+                    let resp = HttpResponse::builder()
                         .status(StatusCode::UNAUTHORIZED)
                         .header("Content-Type", "text/plain")
                         .body(Some("Unauthorized".into()))
                         .unwrap();
-                    return Err(reject_response);
+                    return Err(resp);
                 }
-                info!("Authentication successful for {}", peer);
+                info!("{} authenticated", peer);
             } else {
-                info!("No API key required, proceeding for {}", peer);
+                info!("{} no API key required", peer);
             }
+
             Ok(response)
         };
 
         match accept_hdr_async(stream, auth_callback).await {
-            Ok(ws_stream) => {
-                handle_connection(peer, ws_stream, agent_clone).await;
+            Ok(ws) => {
+                handle_connection(peer, ws, agent_clone).await;
                 Ok(())
             }
             Err(e) => {
-                if let tokio_tungstenite::tungstenite::Error::Http(response) = &e {
-                    error!("WebSocket handshake failed for {}: HTTP {}", peer, response.status());
-                } else {
-                    error!("Error during WebSocket handshake with {}: {}", peer, e);
-                }
-                Err(Box::new(e) as Box<dyn Error + Send + Sync>)
+                error!("Handshake failed for {}: {}", peer, e);
+                Err(Box::new(e) as _)
             }
         }
     }
