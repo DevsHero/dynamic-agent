@@ -204,4 +204,7 @@ pub struct Args {
     /// Optional path to the TLS private key file (PEM format) for enabling WSS. Requires --tls-cert.
     #[arg(long, env = "TLS_KEY_PATH")]
     pub tls_key_path: Option<String>,
+
+    #[arg(long, env = "ENABLE_TLS", default_value = "false")]
+    pub enable_tls: bool,
 }

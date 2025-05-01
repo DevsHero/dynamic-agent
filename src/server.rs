@@ -71,41 +71,60 @@ impl Server {
     pub fn new(addr: String, agent: Arc<AIAgent>, api_key: Option<String>, args: Args) -> Self {
         let inner_agent = (*agent).clone();
         let agent_arc = Arc::new(Mutex::new(inner_agent));
+
+        // treat an empty string the same as no API key
+        let api_key = api_key.filter(|k| !k.trim().is_empty());
+
         if api_key.is_some() {
             info!("Server configured with API Key authentication.");
         } else {
             warn!("Server configured WITHOUT API Key authentication. Connections are open.");
         }
+
         Self { addr, agent: agent_arc, api_key, args }
     }
 
     pub async fn run(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         let listener = TcpListener::bind(&self.addr).await?;
-        let protocol = if self.args.tls_cert_path.is_some() && self.args.tls_key_path.is_some() {
+
+        // Use enable_tls flag as well as cert/key presence
+        let protocol = if
+            self.args.enable_tls &&
+            self.args.tls_cert_path.is_some() &&
+            self.args.tls_key_path.is_some()
+        {
             "wss"
         } else {
             "ws"
         };
         info!("{} server listening on: {}", protocol.to_uppercase(), self.addr);
 
-        let tls_acceptor = match (&self.args.tls_cert_path, &self.args.tls_key_path) {
-            (Some(cert_path), Some(key_path)) => {
-                info!(
-                    "TLS enabled. Loading certificate from '{}' and key from '{}'",
-                    cert_path,
-                    key_path
-                );
-                let config = load_tls_config(cert_path, key_path)?;
-                Some(TlsAcceptor::from(config))
+        // Only attempt to load TLS config when enable_tls is true
+        let tls_acceptor = if self.args.enable_tls {
+            match (&self.args.tls_cert_path, &self.args.tls_key_path) {
+                (Some(cert_path), Some(key_path)) => {
+                    info!(
+                        "TLS enabled. Loading certificate from '{}' and key from '{}'",
+                        cert_path,
+                        key_path
+                    );
+                    let config = load_tls_config(cert_path, key_path)?;
+                    Some(TlsAcceptor::from(config))
+                }
+                (Some(_), None) | (None, Some(_)) => {
+                    error!(
+                        "Both --tls-cert-path and --tls-key-path must be provided to enable TLS."
+                    );
+                    return Err("Missing TLS certificate or key path".into());
+                }
+                (None, None) => {
+                    error!("--enable-tls was set but no certificate/key paths provided.");
+                    return Err("TLS enabled without cert/key".into());
+                }
             }
-            (Some(_), None) | (None, Some(_)) => {
-                error!("Both --tls-cert-path and --tls-key-path must be provided to enable TLS.");
-                return Err("Missing TLS certificate or key path".into());
-            }
-            (None, None) => {
-                info!("TLS not enabled. Running plain WebSocket (WS) server.");
-                None
-            }
+        } else {
+            info!("TLS not enabled. Running plain WebSocket (WS) server.");
+            None
         };
 
         loop {
@@ -162,6 +181,7 @@ impl Server {
             response: Response
         | -> Result<Response, HttpResponse<Option<String>>> {
             info!("Processing WebSocket handshake request from {}", peer);
+            // only enforce auth if there’s actually a non-empty key
             if let Some(ref required_key) = required_api_key {
                 let provided_key = req
                     .headers()
@@ -173,7 +193,7 @@ impl Server {
                     let reject_response = HttpResponse::builder()
                         .status(StatusCode::UNAUTHORIZED)
                         .header("Content-Type", "text/plain")
-                        .body(Some("Unauthorized: Invalid or missing API Key".to_string()))
+                        .body(Some("Unauthorized".into()))
                         .unwrap();
                     return Err(reject_response);
                 }

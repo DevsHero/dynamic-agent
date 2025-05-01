@@ -111,7 +111,10 @@ impl AIAgent {
             embedding_config.base_url.as_deref().unwrap_or("adapter default")
         );
 
-        let query_llm_type_str = args.query_llm_type.as_deref().unwrap_or(&args.chat_llm_type);
+        let query_llm_type_str = match &args.query_llm_type {
+            Some(s) if !s.trim().is_empty() => s.as_str(),
+            _ => &args.chat_llm_type,
+        };
         let query_llm_type = parse_llm_type(query_llm_type_str)?;
         let query_api_key_str = args.query_api_key.as_deref().unwrap_or(&args.chat_api_key);
         let query_api_key = {
