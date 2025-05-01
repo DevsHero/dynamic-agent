@@ -1,0 +1,97 @@
+{
+    "index_schema": {
+      "name": "idx:chat",
+      "prefix": "chat:",
+      "vector_field": {
+        "path": "$.vector",
+        "type": "FLOAT32",
+        "dim": 1536,
+        "metric": "COSINE"
+      },
+      "fields": {
+        "conversation_id": "TAG",
+        "role":            "TAG",
+        "content":         "TEXT",
+        "timestamp":       "NUMERIC"
+      }
+    },
+    "functions": [
+      {
+        "name": "search",
+        "description": "Perform a KNN vector search with optional projection",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "index":        { "type": "string" },
+            "query_vector": { "type": "array", "items": { "type": "number" } },
+            "top_k":        { "type": "integer" },
+            "return_fields": {
+              "oneOf": [
+                { "type": "boolean" },
+                { "type": "array", "items": { "type": "string" } }
+              ]
+            },
+            "dialect":      { "type": "integer", "default": 2 }
+          },
+          "required": ["index", "query_vector", "top_k"]
+        }
+      },
+      {
+        "name": "count",
+        "description": "Count matching documents via a zero-result FT.SEARCH",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "index": { "type": "string" }
+          },
+          "required": ["index"]
+        }
+      },
+      {
+        "name": "scan_keys",
+        "description": "Iterate over keys matching a pattern",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "pattern": { "type": "string" },
+            "count":   { "type": "integer", "default": 1000 }
+          },
+          "required": ["pattern"]
+        }
+      }
+    ],
+    "examples": [
+      {
+        "user_query": "Get the 5 closest chat vectors but only return the content and timestamp",
+        "api_call": {
+          "name": "search",
+          "arguments": {
+            "index": "idx:chat",
+            "query_vector": "<binary_blob>",
+            "top_k": 5,
+            "return_fields": ["content", "timestamp"]
+          }
+        }
+      },
+      {
+        "user_query": "How many messages are in the chat index?",
+        "api_call": {
+          "name": "count",
+          "arguments": {
+            "index": "idx:chat"
+          }
+        }
+      },
+      {
+        "user_query": "List all chat keys",
+        "api_call": {
+          "name": "scan_keys",
+          "arguments": {
+            "pattern": "chat:*",
+            "count":  1000
+          }
+        }
+      }
+    ]
+  }
+  

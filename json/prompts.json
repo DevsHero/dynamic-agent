@@ -1,0 +1,20 @@
+{
+  "intents": {
+    "PROFILE_INFO": {
+      "description": "User asks about personal details (profile), portfolio, contact, education, experience, skills, or languages (e.g., 'what is my email?', 'how many skills?', 'tell me about my job at X', 'what's my latest project?', 'list my education').",
+      "action": "call_rag_tool"
+    },
+    "GENERAL_CHAT": {
+      "description": "Casual conversation or anything not covered above.",
+      "action": "general_llm_call"
+    }
+  },
+  "query_templates": {
+    "intent_classification": "Classify the user message based ONLY on the following intent descriptions:\\n{intent_descriptions}\\n\\nUser message: \"{message}\"\\n\\nRespond ONLY with the intent name (e.g., PROFILE_INFO, GENERAL_CHAT). Do NOT include explanations or any other text.",
+    "rag_topic_inference": "You are given a JSON schema that defines an array `indexes`, each with a `name`.\\n\\nIndexes Schema:\\n{schema_json}\\n\\nUser Question: \"{user_question}\"\\n\\nTask: Identify the single most relevant index *name* from the provided schema for this question.\\n\\nRespond with exactly the index name as it appears under `indexes[].name`. If none is relevant, respond with the single word None. Do NOT include quotes, explanations, or any other text.",
+    "rag_dynamic_query_generation": "You are given:\n\nUser Question: \"{user_question}\"\nInferred Collection/Topic: \"{topic}\"\nAvailable Fields for '{topic}': {fields_json}\n\nTask: Choose which fields from the provided list are needed to answer the question.\n\nRules:\n1. Match user terms to field names case‑insensitively and ignore underscores, hyphens, or spaces.  \n   e.g. “nickname”, “nick name”, or “NickName” → `nick_name`.\n2. Only use field names listed in {fields_json}.\n3. If the user explicitly mentions one or more fields, include exactly those.\n4. If the user asks a general question (no specific field), or if you are unsure, include *all* fields from {fields_json}.\n5. Do NOT invent new field names or prefixes.\n6. Always respond with a single JSON object: {\"arguments\":{\"fields\":[<field1>,<field2>,…]}} and nothing else.\n\nExamples:\n- \"What is my nickname?\" ⇒ {\"arguments\":{\"fields\":[\"nick_name\"]}}\n- \"Show my full name\" ⇒ {\"arguments\":{\"fields\":[\"first_name\",\"last_name\"]}}\n- \"Give me my profile.\" ⇒ {\"arguments\":{\"fields\":<fields_json>}}"
+  },
+  "response_templates": {
+    "rag_final_answer": "0. Minimal Output: Respond with exactly what's asked—no labels, quotes, filler, or explanations.\\n1. Specific Value: If asking for a single field (e.g. full name), return only that value (e.g. Thanon Aphithanawat).\\n2. Counting: If asking \"How many…\", return only the integer (e.g. 5).\\n3. Listing/Summarizing: If asking to list or summarize, give a concise bullet‑style or comma‑separated list of the key items.\\n4. Temporal (Latest/First): If asking about \"latest/last\" or \"first/oldest\", pick the SINGLE correct entry by date and summarize ONLY that entry's fields. For experience, always use start_date and end_date to determine the latest.\\n5. General: For other factual questions, answer concisely using only the provided documents.\\n6. If No Information: Reply \"Not available\" if the docs lack the answer.\\n\\nVector indexes schema:\\n{schema}\\n\\nRetrieved documents ({topic}):\\n---\\n{documents}\\n---\\n\\nUser question: {user_question}"
+  }
+}

@@ -1,0 +1,77 @@
+{
+    "collection_schema": {
+      "name": "chat_history",
+      "vector_size": 1536,
+      "distance": "Cosine",
+      "fields": {
+        "conversation_id": "keyword",
+        "role":           "keyword",
+        "content":        "text",
+        "timestamp":      "integer",
+        "is_summary":     "boolean"
+      }
+    },
+    "functions": [
+      {
+        "name": "search_points",
+        "description": "Vector KNN search in Qdrant, returning top_k nearest neighbors",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "collection_name": { "type": "string" },
+            "vector":          { "type": "array", "items": { "type": "number" } },
+            "limit":           { "type": "integer" },
+            "with_payload":    { "oneOf": [
+                                  { "type": "boolean" },
+                                  { "type": "array", "items": { "type": "string" } }
+                                ] }
+          },
+          "required": ["collection_name", "vector", "limit"]
+        }
+      },
+      {
+        "name": "scroll_points",
+        "description": "Cursor‐style pagination in Qdrant, fetches next batch of points",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "collection_name": { "type": "string" },
+            "limit":           { "type": "integer" },
+            "offset":          { "type": ["integer","null"] },
+            "with_payload":    { "oneOf": [
+                                  { "type": "boolean" },
+                                  { "type": "array", "items": { "type": "string" } }
+                                ] }
+          },
+          "required": ["collection_name", "limit"]
+        }
+      }
+    ],
+    "examples": [
+      {
+        "user_query": "List all timestamps and roles in conversation 'abc123' in ascending order",
+        "api_call": {
+          "name": "scroll_points",
+          "arguments": {
+            "collection_name": "chat_history",
+            "limit": 100,
+            "offset": null,
+            "with_payload": ["timestamp","role"]
+          }
+        }
+      },
+      {
+        "user_query": "Fetch the 5 most recent user messages",
+        "api_call": {
+          "name": "search_points",
+          "arguments": {
+            "collection_name": "chat_history",
+            "vector": "<embedding_of_last_query>",
+            "limit": 5,
+            "with_payload": ["content","role","timestamp"]
+          }
+        }
+      }
+    ]
+  }
+  
