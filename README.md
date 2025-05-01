@@ -29,6 +29,25 @@ Dynamic Agent is a flexible and configurable AI agent framework built in Rust. I
 *   **Vector Store:** Access to a running instance of your chosen vector store (e.g., Redis, Qdrant).
 *   **Redis (Optional):** Required if using Redis for history persistence or caching.
 
+## Getting Data Ready (Integration with db2vec & vector-nexus)
+
+Dynamic Agent works seamlessly with `db2vec` for data ingestion and relies on `vector-nexus` (which is included as a dependency) to interact with your vector store and understand its structure. Here's the typical workflow:
+
+1.  **Ingest Data with `db2vec`:**
+    *   Use the [db2vec](https://github.com/DevsHero/db2vec) tool to dump your source data (from databases, files, etc.) into your chosen vector store. `db2vec` handles connecting to data sources, generating embeddings using a specified model, and indexing the data.
+    *   Ensure the embedding model used in `db2vec` matches the `EMBEDDING_MODEL` configured for Dynamic Agent.
+
+2.  **Automatic Schema Detection via `vector-nexus`:**
+    *   Dynamic Agent uses the [vector-nexus](https://github.com/DevsHero/vector-nexus) library internally.
+    *   **You do not need to manually create `json/index_schema.json`.** `vector-nexus` will automatically inspect your vector store (based on the connection details provided) to determine the structure (indexes/collections and their fields) of the data you ingested with `db2vec`.
+    *   This schema information is then used internally by Dynamic Agent for RAG operations, including dynamic hybrid search query generation driven by the LLM.
+
+3.  **Configure Dynamic Agent:**
+    *   Set up your `.env` file or use CLI arguments to point Dynamic Agent to the same vector store instance used by `db2vec`.
+    *   Ensure the `VECTOR_TYPE`, `VECTOR_HOST`, `VECTOR_INDEX_NAME`, etc., match your setup so `vector-nexus` can connect and inspect the correct store.
+
+With these steps completed, Dynamic Agent, powered by `vector-nexus`, will be ready to perform RAG queries against your data.
+
 ## Configuration
 
 1.  **Environment Variables (`.env`)**
@@ -46,13 +65,13 @@ Dynamic Agent is a flexible and configurable AI agent framework built in Rust. I
         EMBEDDING_LLM_TYPE=ollama
         EMBEDDING_BASE_URL="http://localhost:11434"
         EMBEDDING_API_KEY=""
-        EMBEDDING_MODEL="nomic-embed-text"
+        EMBEDDING_MODEL="nomic-embed-text" # Should match model used in db2vec
 
-        # --- Vector Store (Example: Qdrant) ---
+        # --- Vector Store (Example: Qdrant, matching db2vec output) ---
         VECTOR_TYPE=qdrant
         VECTOR_HOST=http://localhost:6333
         VECTOR_SECRET="" # API Key if needed
-        VECTOR_INDEX_NAME=my_documents
+        VECTOR_INDEX_NAME=my_documents # Should match index created by db2vec
         VECTOR_DIMENSION=768 # Match your embedding model
 
         # --- History (Example: Redis) ---
@@ -78,7 +97,22 @@ Dynamic Agent is a flexible and configurable AI agent framework built in Rust. I
 
 2.  **JSON Configuration Files**
     *   **`json/prompts.json`:** Define agent intents (e.g., `PROFILE_INFO`, `GENERAL_CHAT`), the action associated with each intent (`call_rag_tool`, `general_llm_call`), and the prompt templates used for tasks like intent classification and RAG response generation.
-    *   **`json/index_schema.json`:** Describe the structure of your data within the vector store. List each index/collection name and the fields it contains. This is crucial for the RAG process to understand where to search.
+    *   **`json/index_schema.json`:** Describe the structure of your data within the vector store (as created by `db2vec`). List each index/collection name and the fields it contains. This is crucial for the RAG process. Example:
+        ```json
+        {
+          "indexes": [
+            {
+              "name": "my_documents", // Matches VECTOR_INDEX_NAME
+              "fields": [
+                "text_chunk", // Field containing the text data
+                "source_url", // Example metadata field
+                "timestamp"   // Example metadata field
+              ]
+            }
+            // Add other indexes if applicable
+          ]
+        }
+        ```
     *   **`json/query/*.json`:** (Optional) Contains function schemas specific to vector stores, potentially used for advanced query generation (though currently marked as unused in the RAG engine).
 
 ## Building
