@@ -13,7 +13,6 @@ use tokio::io::{ AsyncRead, AsyncWrite };
 use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::tungstenite::handshake::server::{ Request, Response, ErrorResponse };
 use tokio_tungstenite::tungstenite::http::StatusCode;
-use tokio_tungstenite::tungstenite::http::response::Response as HttpResponse;
 use tokio_rustls::TlsAcceptor;
 use rustls::ServerConfig;
 use rustls::pki_types::{ CertificateDer, PrivateKeyDer };
@@ -180,7 +179,7 @@ impl Server {
     ) -> Result<(), Box<dyn Error + Send + Sync>>
         where S: AsyncRead + AsyncWrite + Unpin + Send + 'static
     {
-        let auth_callback = |req: &Request, mut response: Response| -> Result<Response, ErrorResponse> {
+        let auth_callback = |req: &Request,  response: Response| -> Result<Response, ErrorResponse> {
             let secret = match &required_api_key {
                 Some(k) if !k.is_empty() => k,
                 _ => return Ok(response), 
@@ -203,7 +202,7 @@ impl Server {
                 let now = Utc::now().timestamp();
                 let ts_i: i64 = ts.parse().unwrap_or(0);
                 if (now - ts_i).abs() > 300 {
-                    let mut res = Response::builder()
+                    let res = Response::builder()
                         .status(StatusCode::UNAUTHORIZED)
                         .body(Some("timestamp out of range".into()))
                         .unwrap();
@@ -217,7 +216,7 @@ impl Server {
                 if expected == sig {
                     Ok(response)
                 } else {
-                    let mut res = Response::builder()
+                    let  res = Response::builder()
                         .status(StatusCode::UNAUTHORIZED)
                         .body(Some("bad signature".into()))
                         .unwrap();
