@@ -281,17 +281,14 @@ impl RagEngine {
         user_question: &str,
         available_fields: &[String]
     ) -> Option<Vec<String>> {
-        // 1. Strip punctuation and lowercase
         let mut q = user_question
             .trim_end_matches(|c: char| c.is_ascii_punctuation())
             .to_lowercase();
 
-        // 2. Drop “ from <topic>” tail if any
         if let Some(pos) = q.find(" from ") {
             q.truncate(pos);
         }
 
-        // 3. Split into words and remove leading verbs
         let mut words: Vec<&str> = q.split_whitespace().collect();
         if let Some(first) = words.first() {
             let verbs = ["list", "show", "give", "tell", "what", "find"];
@@ -300,18 +297,15 @@ impl RagEngine {
             }
         }
 
-        // 4. Pick the last term as candidate (drops the topic word)
         let term = words.last().unwrap_or(&"");
         let norm_term = term.replace(&['_', '-', ' '][..], "");
 
-        // 5. Exact match (ignore underscores)
         for f in available_fields {
             if f.to_lowercase().replace('_', "") == norm_term {
                 return Some(vec![f.clone()]);
             }
         }
 
-        // 6. Fuzzy match via Jaro‑Winkler
         let mut best: Option<&String> = None;
         let mut best_score = 0.0;
         for f in available_fields {

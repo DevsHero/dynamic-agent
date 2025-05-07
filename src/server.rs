@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use tokio::net::TcpListener;
 use tokio::io::{ AsyncRead, AsyncWrite };
 use tokio_tungstenite::accept_hdr_async;
-use tokio_tungstenite::tungstenite::handshake::server::{ Request, Response };
+use tokio_tungstenite::tungstenite::handshake::server::{ Request, Response, ErrorResponse };
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::http::response::Response as HttpResponse;
 use tokio_rustls::TlsAcceptor;
@@ -20,8 +20,16 @@ use rustls::pki_types::{ CertificateDer, PrivateKeyDer };
 use rustls_pemfile::{ certs, pkcs8_private_keys };
 use lazy_static::lazy_static;
 use governor::{ RateLimiter, Quota, state::{ InMemoryState, NotKeyed }, clock::DefaultClock };
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+use chrono::Utc;
+use hex;
+use std::collections::HashMap;
+use url::form_urlencoded;
 
-use log::{ info, warn, error, debug };
+type HmacSha256 = Hmac<Sha256>;
+
+use log::{ info, warn, error  };
 
 lazy_static! {
     static ref CONNECTION_LIMITER: RateLimiter<NotKeyed, InMemoryState, DefaultClock> = RateLimiter::direct(Quota::per_second(NonZeroU32::new(10).unwrap()));
@@ -172,48 +180,56 @@ impl Server {
     ) -> Result<(), Box<dyn Error + Send + Sync>>
         where S: AsyncRead + AsyncWrite + Unpin + Send + 'static
     {
-        let auth_callback = |
-            req: &Request,
-            response: Response
-        | -> Result<Response, HttpResponse<Option<String>>> {
-            info!("Handshake from {}", peer);
+        let auth_callback = |req: &Request, mut response: Response| -> Result<Response, ErrorResponse> {
+            let secret = match &required_api_key {
+                Some(k) if !k.is_empty() => k,
+                _ => return Ok(response), 
+            };
 
-            let mut provided = req
-                .headers()
-                .get("X-API-Key")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_owned);
+            let qs = req.uri().query().unwrap_or("");
+            let params: HashMap<String, String> =
+                form_urlencoded::parse(qs.as_bytes()).into_owned().collect();
 
-            if provided.is_none() {
-                if let Some(q) = req.uri().query() {
-                    for pair in q.split('&') {
-                        let mut kv = pair.splitn(2, '=');
-                        if kv.next() == Some("api_key") {
-                            provided = kv.next().map(|v| v.to_string());
-                            break;
-                        }
-                    }
-                }
-            }
+            info!("Auth params from {}: {:?}", peer, params);
 
-            debug!("Client provided API key: {:?}", provided);
+            let ts = params.get("ts")
+                .or_else(|| params.get("X-Api-Ts"))
+                .map(|s| s.as_str());
+            let sig = params.get("sig")
+                .or_else(|| params.get("X-Api-Sign")) 
+                .map(|s| s.as_str());
 
-            if let Some(ref required) = required_api_key {
-                if provided.as_deref() != Some(required.as_str()) {
-                    warn!("{}: bad or missing API key", peer);
-                    let resp = HttpResponse::builder()
+            if let (Some(ts), Some(sig)) = (ts, sig) {
+                let now = Utc::now().timestamp();
+                let ts_i: i64 = ts.parse().unwrap_or(0);
+                if (now - ts_i).abs() > 300 {
+                    let mut res = Response::builder()
                         .status(StatusCode::UNAUTHORIZED)
-                        .header("Content-Type", "text/plain")
-                        .body(Some("Unauthorized".into()))
+                        .body(Some("timestamp out of range".into()))
                         .unwrap();
-                    return Err(resp);
+                    return Err(ErrorResponse::from(res));
                 }
-                info!("{} authenticated", peer);
-            } else {
-                info!("{} no API key required", peer);
-            }
 
-            Ok(response)
+                let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+                mac.update(ts.as_bytes());
+                let expected = hex::encode(mac.finalize().into_bytes());
+
+                if expected == sig {
+                    Ok(response)
+                } else {
+                    let mut res = Response::builder()
+                        .status(StatusCode::UNAUTHORIZED)
+                        .body(Some("bad signature".into()))
+                        .unwrap();
+                    Err(ErrorResponse::from(res))
+                }
+            } else {
+                let  res = Response::builder()
+                    .status(StatusCode::UNAUTHORIZED)
+                    .body(Some("missing ts/sig".into()))
+                    .unwrap();
+                Err(ErrorResponse::from(res))
+            }
         };
 
         match accept_hdr_async(stream, auth_callback).await {

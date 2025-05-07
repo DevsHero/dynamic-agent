@@ -68,8 +68,18 @@ impl ChatClient for GeminiChatClient {
             message_type: MessageType::Text,
         }];
 
-        let response_text = self.llm.chat(&messages).await?;
+        let google_response: Box<dyn rllm::chat::ChatResponse> = self.llm.chat(&messages).await?;
 
-        Ok(CompletionResponse { response: response_text.to_string() })
+        let response_text = google_response
+            .text()
+            .map(|s| s.to_string()) 
+            .unwrap_or_else(|| {
+                log::warn!(
+                    "Failed to extract content from ChatResponse, falling back to to_string()"
+                );
+                google_response.to_string()
+            });
+
+        Ok(CompletionResponse { response: response_text })
     }
 }

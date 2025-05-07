@@ -140,12 +140,51 @@ The server will start listening on the configured `SERVER_ADDR`.
 
 ## Connecting & Interacting
 
-1.  **Connect:** Use a WebSocket client to connect to the agent at the address specified by `SERVER_ADDR`.
-    *   Use `ws://<host>:<port>` for standard connections.
-    *   Use `wss://<host>:<port>` if TLS is enabled via `TLS_CERT_PATH` and `TLS_KEY_PATH`.
-2.  **Authentication:** If `SERVER_API_KEY` is set in the configuration, your WebSocket client must provide this key during the connection handshake (the exact mechanism depends on the client library, often via a header like `Authorization: Bearer <key>` or `X-Api-Key: <key>`).
-3.  **Send Messages:** Send user queries as messages over the WebSocket connection. The expected format is typically a simple text message or a JSON structure depending on the client implementation (e.g., `{"type": "message", "payload": "Tell me about your experience."}`).
-4.  **Receive Responses:** The agent will process the message, potentially performing RAG and LLM calls, and send the response back over the same WebSocket connection.
+1. **Connect:** Use a WebSocket client to connect to the agent at the address specified by `SERVER_ADDR`.
+   * Use `ws://<host>:<port>` for standard connections.
+   * Use `wss://<host>:<port>` if TLS is enabled via `TLS_CERT_PATH` and `TLS_KEY_PATH`.
+
+2. **Authentication:** The server uses HMAC-based authentication for secure WebSocket connections. Clients must include the following query parameters in the WebSocket URL:
+   * `ts`: A UNIX timestamp (in seconds).
+   * `sig`: An HMAC-SHA256 signature of the `ts` value, generated using the shared secret key (`SERVER_API_KEY`).
+
+   Example WebSocket URL:
+   ```
+   ws://<host>:<port>/?ts=1746639884&sig=24efed14e1616e403435034f77899c10441218083d9d047f8aa2435901d486d5
+   ```
+
+   **Steps to Generate the HMAC Signature:**
+   1. Compute the current UNIX timestamp (e.g., `ts = Math.floor(Date.now() / 1000)` in JavaScript).
+   2. Use the shared secret key (`SERVER_API_KEY`) to compute the HMAC-SHA256 signature of the `ts` value.
+   3. Encode the resulting HMAC as a hexadecimal string and include it as the `sig` parameter.
+
+   Example JavaScript Code:
+   ```javascript
+   const ts = Math.floor(Date.now() / 1000).toString();
+   const secret = "your-server-api-key"; // Replace with your SERVER_API_KEY
+   const encoder = new TextEncoder();
+   const key = await crypto.subtle.importKey(
+       "raw",
+       encoder.encode(secret),
+       { name: "HMAC", hash: "SHA-256" },
+       false,
+       ["sign"]
+   );
+   const signature = await crypto.subtle.sign(
+       "HMAC",
+       key,
+       encoder.encode(ts)
+   );
+   const sig = Array.from(new Uint8Array(signature))
+       .map(b => b.toString(16).padStart(2, "0"))
+       .join("");
+
+   const ws = new WebSocket(`ws://<host>:<port>/?ts=${ts}&sig=${sig}`);
+   ```
+
+3. **Send Messages:** Send user queries as messages over the WebSocket connection. The expected format is typically a simple text message or a JSON structure depending on the client implementation (e.g., `{"type": "message", "payload": "Tell me about your experience."}`).
+
+4. **Receive Responses:** The agent will process the message, potentially performing RAG and LLM calls, and send the response back over the same WebSocket connection.
 
 ## Contributing
 
