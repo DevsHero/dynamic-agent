@@ -110,7 +110,7 @@ async fn reload_prompts_handler(
         })).into_response(),
     };
 
-    let source = req.source.as_deref().unwrap_or("both");
+    let source = req.source.as_deref().unwrap_or("local");
     let mut results = Vec::new();
     let mut ok = true;
 

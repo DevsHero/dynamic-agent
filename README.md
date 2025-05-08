@@ -152,27 +152,18 @@ An HTTP GET endpoint is available to manually trigger a reload of prompt configu
     *   `source`: (Optional) Specifies which prompts to reload.
         *   `local`: Reloads only from the local file specified by `PROMPTS_PATH`.
         *   `remote`: Reloads only from Firebase Remote Config (if `ENABLE_REMOTE_PROMPTS` is true).
-        *   `both` (or if `source` parameter is omitted): Reloads from both local and remote sources if configured.
+       
 
 **How to Use the Webhook:**
 
 Assuming the agent is running and the HTTP webhook server is enabled on port `4201` (`HTTP_PORT=4201`):
 
-1.  **Reload both local and remote prompts (default behavior):**
-    ```bash
-    curl "http://localhost:4201/api/reload-prompts"
-    ```
-    or
-    ```bash
-    curl "http://localhost:4201/api/reload-prompts?source=both"
-    ```
-
-2.  **Reload only local prompts:**
+1.  **Reload only local prompts:**
     ```bash
     curl "http://localhost:4201/api/reload-prompts?source=local"
     ```
 
-3.  **Reload only remote prompts (from Firebase):**
+2.  **Reload only remote prompts (from Firebase):**
     ```bash
     curl "http://localhost:4201/api/reload-prompts?source=remote"
     ```
