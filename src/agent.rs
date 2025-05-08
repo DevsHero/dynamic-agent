@@ -9,16 +9,8 @@ use vector_nexus::db::{
 };
 use vector_nexus::schema::SchemaFile;
 
-use qdrant_client::Qdrant;
-use qdrant_client::qdrant::{ Distance, PointStruct, SearchPointsBuilder, VectorParams };
-use qdrant_client::qdrant::vectors_config::Config as VectorsConfig;
-use qdrant_client::qdrant::CreateCollectionBuilder;
-
 use serde_json::Value as JsonValue;
 use serde::{ Deserialize, Serialize };
-use uuid::Uuid;
-
-use redis::Client as RedisClient;
 
 use crate::cli::Args;
 use crate::config::prompt::{ self, PromptConfig };
@@ -28,12 +20,13 @@ use crate::llm::embedding::{ EmbeddingClient, new_client as new_embedding_client
 
 use crate::cache::{self, CacheClients};
 
-use log::{ info, warn, error };
+use log::{ info, warn };
 use std::error::Error;
 use std::sync::Arc;
 use std::fs;
 use std::time::SystemTime;
 use std::path::PathBuf;
+use tokio::sync::RwLock;
 
 const HISTORY_FOR_PROMPT_LEN: usize = 6;
 
@@ -49,7 +42,7 @@ pub struct AIAgent {
     embedding_client: Arc<dyn EmbeddingClient>,
     query_generation_client: Arc<dyn ChatClient>,
     rag_tool: RagEngine,
-    prompt_config: Arc<PromptConfig>,
+    prompt_config: Arc<RwLock<Arc<PromptConfig>>>,
     vector_store: Arc<dyn VectorStore>,
     history_store: Arc<dyn HistoryStore>,
     schema_last_reload: Option<SystemTime>,
@@ -57,6 +50,7 @@ pub struct AIAgent {
     vector_type: String,
     enable_cache: bool,
     cache: CacheClients,
+    prompts_path: String, 
 }
 
 impl AIAgent {
@@ -166,13 +160,11 @@ impl AIAgent {
     async fn load_configs_and_schemas(
         args: &Args,
         vector_store: &Arc<dyn VectorStore>
-    ) -> Result<(SchemaFile, Arc<PromptConfig>, JsonValue), Box<dyn Error + Send + Sync>> {
+    ) -> Result<(SchemaFile, JsonValue), Box<dyn Error + Send + Sync>> {
         let schema_path = &args.schema_path;
-        let prompts_path = &args.prompts_path;
         let function_schema_dir = &args.function_schema_dir;
         let schemas = vector_store.generate_schema(schema_path).await?;
         let schema_file = SchemaFile { indexes: schemas };
-        let prompt_config_arc = prompt::load_prompts(prompts_path)?;
         let function_schema_path = PathBuf::from(function_schema_dir).join(
             format!("{}.json", args.vector_type)
         );
@@ -200,20 +192,25 @@ impl AIAgent {
             function_schema_path.display()
         );
 
-        Ok((schema_file, prompt_config_arc, function_schema))
+        Ok((schema_file, function_schema))
     }
 
-    pub async fn new(args: Args) -> Result<Self, Box<dyn Error + Send + Sync>> {
+    pub async fn new(
+        args: Args, 
+        shared_prompt_config: Arc<RwLock<Arc<PromptConfig>>>
+    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let (chat_client, embedding_client, query_generation_client) = Self::initialize_llm_clients(
             &args
         ).await?;
         let vector_store = Self::initialize_vector_store(&args).await?;
         let history_store = initialize_history_store(&args)?;
-        let (schema_file, prompt_config_arc, function_schema) = Self::load_configs_and_schemas(
+        let (schema_file, function_schema) = Self::load_configs_and_schemas(
             &args,
             &vector_store
         ).await?;
         let cache = cache::init(&args).await;
+
+        let current_prompt_config = shared_prompt_config.read().await.clone();
 
         let rag_tool = RagEngine::new(
             Arc::clone(&vector_store),
@@ -221,7 +218,7 @@ impl AIAgent {
             Arc::clone(&embedding_client),
             Arc::clone(&query_generation_client),
             schema_file.indexes,
-            Arc::clone(&prompt_config_arc),
+            current_prompt_config,
             function_schema,
             args.vector_type.clone(),
             args.rag_default_limit,
@@ -233,7 +230,7 @@ impl AIAgent {
             embedding_client,
             query_generation_client,
             rag_tool,
-            prompt_config: prompt_config_arc,
+            prompt_config: shared_prompt_config,
             vector_store,
             history_store,
             schema_last_reload: Some(SystemTime::now()),
@@ -241,6 +238,7 @@ impl AIAgent {
             vector_type: args.vector_type.clone(),
             enable_cache: args.enable_cache,
             cache,
+            prompts_path: args.prompts_path.clone(), 
         })
     }
 
@@ -249,15 +247,26 @@ impl AIAgent {
         conversation_id: &str,
         message: &str
     ) -> Result<String, Box<dyn Error + Send + Sync>> {
+
+        if let Ok(true) = prompt::check_local_prompt_file_changed(&self.prompts_path) {
+            info!("Local prompts file changed, reloading...");
+            if let Ok(new_config) = prompt::load_prompts_from_str(&self.prompts_path) {
+                let mut write_lock = self.prompt_config.write().await;
+                *write_lock = new_config;
+                info!("Local prompts reloaded successfully");
+            }
+        }
+        
         let conversation = self.history_store.get_conversation(
             conversation_id,
             HISTORY_FOR_PROMPT_LEN
         ).await?;
         let history_str = format_history_for_prompt(&conversation);
-        let intent_prompt = prompt::get_intent_prompt(&self.prompt_config, message)?;
+        let current_prompt_config = self.prompt_config.read().await;
+        let intent_prompt = prompt::get_intent_prompt(&current_prompt_config, message)?;
         let intent_response = self.chat_client.complete(&intent_prompt).await?;
         let intent_name = intent_response.response.trim();
-        let intent_definition = self.prompt_config.intents
+        let intent_definition = current_prompt_config.intents
             .get(intent_name)
             .ok_or_else(|| prompt::PromptError::IntentNotFound(intent_name.to_string()))?;
 
@@ -267,10 +276,29 @@ impl AIAgent {
                     query: message.to_string(),
                     limit: Some(self.rag_default_limit),
                 };
-                self.rag_tool.query_and_answer(rag_args, message).await
+                
+                let (documents, topic, schema_json) = self.rag_tool.get_documents_for_query(rag_args).await?;
+                
+                let docs_text = documents.iter()
+                    .map(|doc| doc.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                
+                let final_prompt = prompt::get_rag_final_prompt(
+                    &current_prompt_config, 
+                    &schema_json,
+                    &topic,
+                    &docs_text,
+                    message
+                )?;
+                
+                drop(current_prompt_config);
+                let resp = self.chat_client.complete(&final_prompt).await?;
+                Ok(resp.response)
             }
             "general_llm_call" => {
                 let prompt_with_history = format!("{}\n\nUser: {}", history_str, message);
+                drop(current_prompt_config);
                 let resp = self.chat_client.complete(&prompt_with_history).await?;
                 Ok(resp.response)
             }
@@ -295,7 +323,7 @@ impl AIAgent {
         info!("ℹ️ Normalized message for cache lookup: '{}'", normalized);
 
         if self.enable_cache {
-            if let Some((resp, emb)) =
+            if let Some((resp, _emb)) =
                 cache::check(&self.cache, &normalized, &*self.embedding_client).await?
             {
                 info!("✅ Cache Hit");
@@ -327,7 +355,8 @@ impl AIAgent {
         let schema_path = &args.schema_path;
         let function_schema_dir = &args.function_schema_dir;
 
-        let result = prompt::reload_prompts_if_changed(prompts_path, &self.prompt_config)?;
+        let current_prompt_config = self.prompt_config.read().await.clone();
+        let result = prompt::reload_prompts_if_changed(prompts_path, &current_prompt_config)?;
 
         if let Some(new_config) = result {
             let schema_text = fs::read_to_string(schema_path)?;
@@ -346,7 +375,9 @@ impl AIAgent {
                 }
             };
 
-            self.prompt_config = Arc::clone(&new_config);
+            let mut prompt_write = self.prompt_config.write().await;
+            *prompt_write = Arc::clone(&new_config);
+            drop(prompt_write);
 
             self.rag_tool = RagEngine::new(
                 Arc::clone(&self.vector_store),
@@ -389,13 +420,15 @@ impl AIAgent {
             }
         };
 
+        let current_prompt_config = self.prompt_config.read().await.clone();
+
         self.rag_tool = RagEngine::new(
             Arc::clone(&self.vector_store),
             Arc::clone(&self.chat_client),
             Arc::clone(&self.embedding_client),
             Arc::clone(&self.query_generation_client),
             schemas,
-            Arc::clone(&self.prompt_config),
+            current_prompt_config,
             function_schema,
             self.vector_type.clone(),
             args.rag_default_limit,
@@ -407,5 +440,43 @@ impl AIAgent {
         Ok(true)
     }
 
-   
+    pub async fn force_refresh_remote_prompts(
+        &mut self,
+        args: &Args
+    ) -> Result<bool, Box<dyn Error + Send + Sync>> {
+        if !args.enable_remote_prompts {
+            return Ok(false);
+        }
+        
+        let project_id = args.remote_prompts_project_id.as_deref().ok_or_else(|| {
+            "Missing REMOTE_PROMPTS_PROJECT_ID".to_string()
+        })?;
+        
+        let sa_key_path = args.remote_prompts_sa_key_path.as_deref().ok_or_else(|| {
+            "Missing REMOTE_PROMPTS_SA_KEY_PATH".to_string()
+        })?;
+        
+        let remote_client = crate::config::remote_config::RemoteConfigClient::new();
+        
+        match remote_client.fetch_config(project_id, sa_key_path).await {
+            Ok(Some(json_str)) => {  
+                match crate::config::prompt::load_prompts_from_str(&json_str) {
+                    Ok(new_config) => {
+                        let mut w = self.prompt_config.write().await;
+                        *w = new_config;
+                        drop(w);
+                        
+                        info!("Remote prompts successfully refreshed via webhook");
+                        Ok(true)
+                    }
+                    Err(e) => Err(Box::new(e)),
+                }
+            },
+            Ok(None) => {
+                warn!("No remote prompts found for project ID: {}", project_id);
+                Ok(false)
+            },
+            Err(e) => Err(Box::new(e)),
+        }
+    }
 }

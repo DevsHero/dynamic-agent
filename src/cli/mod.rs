@@ -207,4 +207,24 @@ pub struct Args {
 
     #[arg(long, env = "ENABLE_TLS", default_value = "false")]
     pub enable_tls: bool,
+
+    // --- Remote Prompt Configuration Args ---
+    /// Enable fetching prompt configurations from a remote source (e.g., Firebase Remote Config).
+    #[arg(long, env = "ENABLE_REMOTE_PROMPTS", default_value = "false")]
+    pub enable_remote_prompts: bool,
+
+    /// Project ID for the remote prompt configuration service (e.g., Firebase Project ID).
+    /// Required if 'enable_remote_prompts' is true.
+    #[arg(long, env = "REMOTE_PROMPTS_PROJECT_ID")]
+    pub remote_prompts_project_id: Option<String>,
+
+    /// Path to the service account key JSON file for authenticating with the remote prompt configuration service.
+    /// Required if 'enable_remote_prompts' is true.
+    #[arg(long, env = "REMOTE_PROMPTS_SA_KEY_PATH", default_value = "firebase-sa.json")]
+    pub remote_prompts_sa_key_path: Option<String>,
+
+
+    /// Port for HTTP webhook endpoints (different from WebSocket port)
+    #[arg(long, env = "HTTP_PORT" , default_value = "4200")]
+    pub http_port: Option<u16>,
 }

@@ -2,6 +2,13 @@
   "indexes": [
     {
       "fields": [
+        "text"
+      ],
+      "name": "agent_cache",
+      "prefix": "qdrant:agent_cache"
+    },
+    {
+      "fields": [
         "admin_password",
         "config",
         "table"
@@ -20,6 +27,14 @@
       ],
       "name": "contact",
       "prefix": "qdrant:contact"
+    },
+    {
+      "fields": [
+        "timestamp",
+        "conversation_id"
+      ],
+      "name": "default_index",
+      "prefix": "qdrant:default_index"
     },
     {
       "fields": [
@@ -100,8 +115,17 @@
     },
     {
       "fields": [
+        "normalized_prompt",
+        "response"
+      ],
+      "name": "prompt_response_cache",
+      "prefix": "qdrant:prompt_response_cache"
+    },
+    {
+      "fields": [
         "level",
         "name",
+        "skill",
         "table"
       ],
       "name": "skill",

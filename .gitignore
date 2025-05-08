@@ -4,3 +4,5 @@
 json/index_schema.json
 .vscode/
 .idea/
+firebaseKey.json
+qdrant_storage

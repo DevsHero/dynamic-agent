@@ -41,6 +41,41 @@ impl fmt::Display for RagEngineError {
 
 impl StdError for RagEngineError {}
 
+#[derive(Debug, Clone)]
+pub struct Document {
+    pub score: f32,
+    pub id: String,
+    pub content: Value,
+}
+
+impl fmt::Display for Document {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Document ID: {} (Score: {:.4})\n", self.id, self.score)?;
+        if let Some(doc_obj) = self.content.as_object() {
+            if doc_obj.is_empty() {
+                write!(f, "  - (No fields retrieved for this document)\n")?;
+            } else {
+                for (key, value) in doc_obj {
+                    if key == "vector" || 
+                       key == "pdf" || 
+                       key == "describe_pdf_data" || 
+                       key == "portfolio_detail_pdf_data" {
+                        continue;
+                    }
+                    let value_str = match value {
+                        Value::String(s) => s.clone(),
+                        _ => value.to_string(),
+                    };
+                    write!(f, "  - {}: {}\n", key, value_str)?;
+                }
+            }
+        } else {
+            write!(f, "  - Document content is not a valid JSON object.\n")?;
+        }
+        write!(f, "\n")
+    }
+}
+
 #[derive(Clone)]
 pub struct RagEngine {
     vector_store: Arc<dyn VectorStore>,
@@ -278,6 +313,138 @@ impl RagEngine {
             .map_err(|e| Box::new(RagEngineError(format!("Final completion failed: {}", e))))?;
 
         Ok(answer_resp.response)
+    }
+
+    async fn infer_query_topic(&self, query: &str) -> Result<String, Box<dyn StdError + Send + Sync>> {
+        let schema_json_for_inference = serde_json::to_string(&self.index_schemas)?;
+        let topic_inference_prompt = prompt::get_rag_topic_prompt(
+            &self.prompt_config,
+            &schema_json_for_inference,
+            query
+        )?;
+        
+        info!("--- Topic Inference Prompt ---\n{}\n-----------------------------", topic_inference_prompt);
+        
+        let topic_resp = self.chat_client.complete(&topic_inference_prompt).await?;
+        let inferred_topic = topic_resp.response.trim().trim_matches('"').to_lowercase();
+        
+        info!("--- Inferred Topic (Trimmed, No Quotes, Lowercased): '{}' ---", inferred_topic);
+        
+        if inferred_topic.is_empty() || 
+           inferred_topic == "none" || 
+           !self.index_schemas.iter().any(|s| s.name == inferred_topic) {
+            info!("Primary topic inference failed, trying fallback resolver");
+            
+            let schema_summary = self.index_schemas.iter()
+                .map(|s| format!("- {}: fields={}", s.name, s.fields.join(", ")))
+                .collect::<Vec<_>>()
+                .join("\n");
+                
+            let fallback_prompt = prompt::get_fallback_topic_prompt(
+                &self.prompt_config,
+                &schema_summary,
+                query
+            )?;
+            
+            let fallback_resp = self.chat_client.complete(&fallback_prompt).await?;
+            let fallback_topic = fallback_resp.response.trim().trim_matches('"').to_lowercase();
+            
+            info!("--- Fallback Topic Resolution: '{}' ---", fallback_topic);
+            
+            if fallback_topic.is_empty() || 
+               fallback_topic == "none" || 
+               !self.index_schemas.iter().any(|s| s.name == fallback_topic) {
+                return Err(Box::new(RagEngineError(
+                    "Could not determine the correct data category for your question after multiple attempts. Please try rephrasing.".into()
+                )));
+            }
+            
+            Ok(fallback_topic)
+        } else {
+            Ok(inferred_topic)
+        }
+    }
+
+    async fn retrieve_documents(&self, args: &RagQueryArgs, topic: &str) -> Result<Vec<Document>, Box<dyn StdError + Send + Sync>> {
+        let embed_resp = self.embedding_client
+            .embed(&args.query).await
+            .map_err(|e| Box::new(RagEngineError(format!("Embedding failed: {}", e))))?;
+        let vec_f32 = embed_resp.embedding;
+        
+        let available_fields = self.index_schemas
+            .iter()
+            .find(|s| s.name == topic)
+            .map(|s| s.fields.as_slice())
+            .unwrap_or(&[]);
+
+        let selected_fields = if self.use_llm_query {
+            info!("→ Attempting to resolve dynamic fields using LLM...");
+            self.resolve_dynamic_fields(&args.query, available_fields).unwrap_or_else(|| {
+                info!("→ LLM field resolution failed or returned none, falling back to all fields.");
+                available_fields.to_vec()
+            })
+        } else {
+            info!("→ Skipping LLM field resolution, using all available fields.");
+            available_fields.to_vec()
+        };
+
+        let mut hits = {
+            let limit = args.limit.unwrap_or(self.rag_default_limit);
+
+            info!("→ Performing search with selected fields: {:?}", selected_fields);
+
+            self.vector_store.search_hybrid(
+                topic,
+                &args.query,
+                &vec_f32,
+                limit,
+                Some(&selected_fields)
+            ).await?
+        };
+
+        let lower_q = args.query.to_lowercase();
+        if (topic == "experience" || topic == "education" || topic == "portfolio") && 
+           (lower_q.contains("latest") || lower_q.contains("recent") || 
+            lower_q.contains("newest") || lower_q.contains("current")) {
+            hits.sort_by(|(_, _, a), (_, _, b)| {
+                let a_date = a
+                    .get("end_date")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("0000-00-00");
+
+                let b_date = b
+                    .get("end_date")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("0000-00-00");
+
+                b_date.cmp(a_date)
+            });
+
+            if hits.len() > 1 {
+                hits = vec![hits[0].clone()];
+                info!("Filtered to latest entry by end_date");
+            }
+        }
+
+        let documents = hits.into_iter()
+            .map(|(score, id, content)| Document { score, id, content })
+            .collect();
+            
+        Ok(documents)
+    }
+
+    pub async fn get_documents_for_query(
+        &self, 
+        args: RagQueryArgs
+    ) -> Result<(Vec<Document>, String, String), Box<dyn StdError + Send + Sync>> {
+        let topic = self.infer_query_topic(&args.query).await?;
+        let documents = self.retrieve_documents(&args, &topic).await?;
+        let schema_json = self.get_schema_json();
+        Ok((documents, topic, schema_json))
+    }
+
+    pub fn get_schema_json(&self) -> String {
+        serde_json::to_string(&self.index_schemas).unwrap_or_default()
     }
 
     fn resolve_dynamic_fields(

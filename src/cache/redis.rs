@@ -44,13 +44,3 @@ pub async fn set(
     }
     Ok(())
 }
-
-// pub async fn clear(
-//     conn: &Option<Arc<Mutex<MultiplexedConnection>>>
-// ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-//     if let Some(c) = conn {
-//         let mut lock = c.lock().await;
-//         let _ : () = redis::cmd("FLUSHDB").query_async(&mut *lock).await?;
-//     }
-//     Ok(())
-// }
