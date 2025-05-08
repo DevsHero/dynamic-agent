@@ -1,31 +1,30 @@
-# Stage 1: Build the application
-FROM rust:slim-bullseye as builder
+FROM rust:slim-bullseye AS builder
 
 WORKDIR /usr/src/dynamic-agent
 
-# Install build dependencies
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy only Cargo files first to take advantage of Docker layer caching
 COPY Cargo.toml Cargo.lock ./
-
-# Create a dummy main.rs to build dependencies
 RUN mkdir -p src && \
-    echo "fn main() {}" > src/main.rs && \
+    echo "fn main() { /* dummy main for dependency caching */ }" > src/main.rs && \
+    echo "pub fn lib_placeholder() { /* dummy lib for dependency caching */ }" > src/lib.rs && \
     cargo build --release && \
-    rm -f target/release/deps/dynamic_agent*
+    rm -f target/release/dynamic-agent && \
+    find target/release -maxdepth 1 -type f -name "libdynamic_agent.*" -delete && \
+    rm -rf target/release/.fingerprint/dynamic-agent-* && \
+    rm -rf target/release/build/dynamic-agent-* && \
+    rm -rf target/release/incremental/dynamic-agent-*
 
-# Now copy the real source code
 COPY . .
 
-# Build the application
+# Build the application with the real source code
 RUN cargo build --release
 
 # Stage 2: Create the runtime image
-FROM rust:slim-bullseye as runner
+FROM rust:slim-bullseye AS runner
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \

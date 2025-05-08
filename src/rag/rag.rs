@@ -123,60 +123,64 @@ impl RagEngine {
         args: RagQueryArgs,
         user_question: &str
     ) -> Result<String, Box<dyn StdError + Send + Sync>> {
-        let schema_json_for_inference = serde_json
-            ::to_string(&self.index_schemas)
-            .map_err(|e|
-                Box::new(RagEngineError(format!("Schema JSON error for inference: {}", e)))
-            )?;
-
+        let schema_json_for_inference = serde_json::to_string(&self.index_schemas)?;
         let topic_inference_prompt = prompt::get_rag_topic_prompt(
             &self.prompt_config,
             &schema_json_for_inference,
             user_question
         )?;
-
+        
         info!("--- Topic Inference Prompt ---\n{}\n-----------------------------", topic_inference_prompt);
-
-        let topic_resp = self.chat_client
-            .complete(&topic_inference_prompt).await
-            .map_err(|e| Box::new(RagEngineError(format!("Topic inference failed: {}", e))))?;
-
-        let inferred_topic_trimmed = topic_resp.response.trim();
-        let inferred_topic_no_quotes = inferred_topic_trimmed.trim_matches('"');
-        let inferred_topic = inferred_topic_no_quotes.to_lowercase();
-
+        
+        let topic_resp = self.chat_client.complete(&topic_inference_prompt).await?;
+        let inferred_topic = topic_resp.response.trim().trim_matches('"').to_lowercase();
+        
         info!("--- Inferred Topic (Trimmed, No Quotes, Lowercased): '{}' ---", inferred_topic);
-
-        if
-            inferred_topic.is_empty() ||
-            !self.index_schemas.iter().any(|s| s.name == inferred_topic)
-        {
-            let reason = if inferred_topic.is_empty() {
-                "empty"
-            } else {
-                "invalid (not in schema)"
-            };
-            info!("Topic inference resulted in an {} topic: '{}'", reason, inferred_topic_trimmed);
-            return Err(
-                Box::new(
-                    RagEngineError(
-                        format!(
-                            "Could not determine the correct data category for your question. Please try rephrasing."
-                        )
-                    )
-                ) as Box<dyn StdError + Send + Sync>
-            );
-        }
+        
+        let final_topic = if inferred_topic.is_empty() || 
+                           inferred_topic == "none" || 
+                           !self.index_schemas.iter().any(|s| s.name == inferred_topic) {
+            info!("Primary topic inference failed, trying fallback resolver");
+            
+            let schema_summary = self.index_schemas.iter()
+                .map(|s| format!("- {}: fields={}", s.name, s.fields.join(", ")))
+                .collect::<Vec<_>>()
+                .join("\n");
+                
+            let fallback_prompt = prompt::get_fallback_topic_prompt(
+                &self.prompt_config,
+                &schema_summary,
+                user_question
+            )?;
+            
+            let fallback_resp = self.chat_client.complete(&fallback_prompt).await?;
+            let fallback_topic = fallback_resp.response.trim().trim_matches('"').to_lowercase();
+            
+            info!("--- Fallback Topic Resolution: '{}' ---", fallback_topic);
+            
+            if fallback_topic.is_empty() || 
+               fallback_topic == "none" || 
+               !self.index_schemas.iter().any(|s| s.name == fallback_topic) {
+                return Err(Box::new(RagEngineError(
+                    "Could not determine the correct data category for your question after multiple attempts. Please try rephrasing.".into()
+                )));
+            }
+            
+            fallback_topic
+        } else {
+            inferred_topic
+        };
+        
         let lower_q = user_question.to_lowercase();
         if
             (lower_q.contains("count") ||
                 lower_q.contains("total") ||
                 lower_q.contains("how many") ||
                 lower_q.contains("how much")) &&
-            !inferred_topic.is_empty()
+            !final_topic.is_empty()
         {
             let cnt = self.vector_store
-                .count_documents(&inferred_topic).await
+                .count_documents(&final_topic).await
                 .map_err(|e| Box::new(RagEngineError(format!("Count failed: {}", e))))?;
             return Ok(cnt.to_string());
         }
@@ -187,7 +191,7 @@ impl RagEngine {
         let vec_f32 = embed_resp.embedding;
         let available_fields = self.index_schemas
             .iter()
-            .find(|s| s.name == inferred_topic)
+            .find(|s| s.name == final_topic)
             .map(|s| s.fields.as_slice())
             .unwrap_or(&[]);
 
@@ -210,7 +214,7 @@ impl RagEngine {
             info!("→ Performing search with selected fields: {:?}", selected_fields);
 
             self.vector_store.search_hybrid(
-                &inferred_topic,
+                &final_topic,
                 user_question,
                 &vec_f32,
                 limit,
@@ -219,9 +223,9 @@ impl RagEngine {
         };
 
         if
-            (inferred_topic == "experience" ||
-                inferred_topic == "education" ||
-                inferred_topic == "portfolio") &&
+            (final_topic == "experience" ||
+                final_topic == "education" ||
+                final_topic == "portfolio") &&
             (lower_q.contains("latest") ||
                 lower_q.contains("recent") ||
                 lower_q.contains("newest") ||
@@ -252,7 +256,7 @@ impl RagEngine {
         let retrieved_topics = if hits.is_empty() {
             "none".to_string()
         } else {
-            inferred_topic.clone()
+            final_topic.clone()
         };
 
         let schema_json_for_answer = serde_json

@@ -2,3 +2,5 @@
 .env
 .DS_Store
 json/index_schema.json
+.vscode/
+.idea/

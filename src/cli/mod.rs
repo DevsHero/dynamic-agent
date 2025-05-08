@@ -190,7 +190,7 @@ pub struct Args {
     pub cache_qdrant_collection: String,
 
     /// Cosine similarity threshold for considering a Qdrant cache hit valid (0.0 to 1.0).
-    #[arg(long, env = "CACHE_SIMILARITY_THRESHOLD", default_value = "0.95")]
+    #[arg(long, env = "CACHE_SIMILARITY_THRESHOLD", default_value = "0.5")]
     pub cache_similarity_threshold: f32,
 
     /// Time-to-live (TTL) in seconds for Redis cache entries. 0 means no TTL.

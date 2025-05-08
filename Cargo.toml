@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Thanon Aphithanawat"]
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "dynamic-agent"
+path = "src/main.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.20"

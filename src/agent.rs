@@ -19,13 +19,14 @@ use serde::{ Deserialize, Serialize };
 use uuid::Uuid;
 
 use redis::Client as RedisClient;
-use redis::AsyncCommands;
 
 use crate::cli::Args;
 use crate::config::prompt::{ self, PromptConfig };
 use crate::llm::{ parse_llm_type, LlmConfig };
 use crate::llm::chat::{ ChatClient, new_client as new_chat_client };
 use crate::llm::embedding::{ EmbeddingClient, new_client as new_embedding_client };
+
+use crate::cache::{self, CacheClients};
 
 use log::{ info, warn, error };
 use std::error::Error;
@@ -55,11 +56,7 @@ pub struct AIAgent {
     rag_default_limit: usize,
     vector_type: String,
     enable_cache: bool,
-    cache_redis_conn: Option<Arc<tokio::sync::Mutex<redis::aio::MultiplexedConnection>>>,
-    cache_qdrant_client: Option<Arc<Qdrant>>,
-    cache_qdrant_collection: String,
-    cache_similarity_threshold: f32,
-    cache_redis_ttl: usize,
+    cache: CacheClients,
 }
 
 impl AIAgent {
@@ -206,81 +203,6 @@ impl AIAgent {
         Ok((schema_file, prompt_config_arc, function_schema))
     }
 
-    async fn initialize_cache_clients(
-        args: &Args
-    ) -> Result<
-        (Option<Arc<tokio::sync::Mutex<redis::aio::MultiplexedConnection>>>, Option<Arc<Qdrant>>),
-        Box<dyn Error + Send + Sync>
-    > {
-        if !args.enable_cache {
-            info!("Cache disabled.");
-            return Ok((None, None));
-        }
-
-        info!("Cache enabled. Initializing cache clients...");
-        let mut cache_redis_conn = None;
-        let mut cache_qdrant_client = None;
-
-        match RedisClient::open(args.cache_redis_url.as_str()) {
-            Ok(redis_client) => {
-                match redis_client.get_multiplexed_async_connection().await {
-                    Ok(conn) => {
-                        cache_redis_conn = Some(Arc::new(tokio::sync::Mutex::new(conn)));
-                        info!("✅ Cache Redis client connected to {}", args.cache_redis_url);
-                    }
-                    Err(e) => error!("Failed to get Redis cache connection: {}", e),
-                }
-            }
-            Err(e) => error!("Failed to create Redis cache client: {}", e),
-        }
-
-        match
-            Qdrant::from_url(&args.cache_qdrant_url)
-                .api_key(args.cache_qdrant_api_key.clone())
-                .build()
-        {
-            Ok(qdrant_client_instance) => {
-                let qdrant_arc = Arc::new(qdrant_client_instance);
-                cache_qdrant_client = Some(Arc::clone(&qdrant_arc));
-                info!("✅ Cache Qdrant client connected to {}", args.cache_qdrant_url);
-
-                let collection_name = &args.cache_qdrant_collection;
-                if qdrant_arc.collection_info(collection_name).await.is_err() {
-                    info!("Qdrant cache collection '{}' not found. Attempting to create...", collection_name);
-                    let embed_dim = args.dimension;
-                    let create_collection = CreateCollectionBuilder::new(collection_name.clone())
-                        .vectors_config(
-                            VectorsConfig::Params(VectorParams {
-                                size: embed_dim as u64,
-                                distance: Distance::Cosine.into(),
-                                ..Default::default()
-                            })
-                        )
-                        .build();
-                    match qdrant_arc.create_collection(create_collection).await {
-                        Ok(_) =>
-                            info!(
-                                "✅ Successfully created Qdrant cache collection '{}' with dimension {}.",
-                                collection_name,
-                                embed_dim
-                            ),
-                        Err(e) =>
-                            error!(
-                                "Failed to create Qdrant cache collection '{}': {}",
-                                collection_name,
-                                e
-                            ),
-                    }
-                } else {
-                    info!("✅ Qdrant cache collection '{}' already exists.", collection_name);
-                }
-            }
-            Err(e) => error!("Failed to create Qdrant cache client: {}", e),
-        }
-
-        Ok((cache_redis_conn, cache_qdrant_client))
-    }
-
     pub async fn new(args: Args) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let (chat_client, embedding_client, query_generation_client) = Self::initialize_llm_clients(
             &args
@@ -291,7 +213,7 @@ impl AIAgent {
             &args,
             &vector_store
         ).await?;
-        let (cache_redis_conn, cache_qdrant_client) = Self::initialize_cache_clients(&args).await?;
+        let cache = cache::init(&args).await;
 
         let rag_tool = RagEngine::new(
             Arc::clone(&vector_store),
@@ -318,94 +240,8 @@ impl AIAgent {
             rag_default_limit: args.rag_default_limit,
             vector_type: args.vector_type.clone(),
             enable_cache: args.enable_cache,
-            cache_redis_conn,
-            cache_qdrant_client,
-            cache_qdrant_collection: args.cache_qdrant_collection,
-            cache_similarity_threshold: args.cache_similarity_threshold,
-            cache_redis_ttl: args.cache_redis_ttl,
+            cache,
         })
-    }
-
-    async fn check_redis_cache(
-        &self,
-        normalized_key: &str
-    ) -> Result<Option<String>, Box<dyn Error + Send + Sync>> {
-        if !self.enable_cache || self.cache_redis_conn.is_none() {
-            return Ok(None);
-        }
-
-        let mut conn_guard = self.cache_redis_conn.as_ref().unwrap().lock().await;
-        match conn_guard.get::<_, String>(normalized_key).await {
-            Ok(cached_response) => {
-                info!("✅ Cache Hit (Redis Exact on normalized key)");
-                Ok(Some(cached_response))
-            }
-            Err(redis::RedisError { .. }) => Ok(None),
-        }
-    }
-
-    async fn check_qdrant_cache(
-        &self,
-        normalized_message: &str
-    ) -> Result<Option<(String, Vec<f32>)>, Box<dyn Error + Send + Sync>> {
-        if !self.enable_cache || self.cache_qdrant_client.is_none() {
-            return Ok(None);
-        }
-
-        let embed_resp = self.embedding_client.embed(normalized_message).await?;
-        let vec_f32 = embed_resp.embedding;
-        let qdrant_client = self.cache_qdrant_client.as_ref().unwrap();
-        let search_response = qdrant_client.search_points(
-            SearchPointsBuilder::new(
-                &self.cache_qdrant_collection,
-                vec_f32.clone(),
-                1
-            ).score_threshold(self.cache_similarity_threshold)
-        ).await?;
-
-        if let Some(point) = search_response.result.first() {
-            if point.score >= self.cache_similarity_threshold {
-                let mut map = serde_json::Map::new();
-                for (k, v) in point.payload.clone() {
-                    match serde_json::to_value(v) {
-                        Ok(val) => {
-                            map.insert(k, val);
-                        }
-                        Err(err) => warn!("Skipping field '{}' in cache payload: {}", k, err),
-                    }
-                }
-                let obj = JsonValue::Object(map);
-                match serde_json::from_value::<CachePayload>(obj) {
-                    Ok(cached) => {
-                        info!("✅ Cache Hit (Qdrant Semantic, Score: {:.4})", point.score);
-                        return Ok(Some((cached.response, vec_f32)));
-                    }
-                    Err(err) => {
-                        warn!("Malformed cache payload, skipping hit: {}", err);
-                        return Ok(None);
-                    }
-                }
-            }
-        }
-
-        Ok(None)
-    }
-
-    async fn prime_redis_cache(&self, key: &str, value: &str) {
-        if let Some(redis_conn_arc) = &self.cache_redis_conn {
-            let mut conn_guard = redis_conn_arc.lock().await;
-            let ttl = self.cache_redis_ttl;
-            let set_cmd = if ttl > 0 {
-                conn_guard.set_ex::<_, _, ()>(key, value, ttl as u64)
-            } else {
-                conn_guard.set::<_, _, ()>(key, value)
-            };
-            if let Err(e) = set_cmd.await {
-                error!("Failed to prime Redis cache for key '{}': {}", key, e);
-            } else {
-                info!("📝 Cached response in Redis (key: '{}')", key);
-            }
-        }
     }
 
     async fn execute_llm_interaction(
@@ -450,118 +286,37 @@ impl AIAgent {
         }
     }
 
-    async fn update_qdrant_cache(
-        &self,
-        normalized_prompt: &str,
-        response: &str,
-        embedding: Vec<f32>
-    ) {
-        if !self.enable_cache || self.cache_qdrant_client.is_none() || embedding.is_empty() {
-            return;
-        }
-
-        let qdrant_client_arc = self.cache_qdrant_client.as_ref().unwrap();
-        let payload = CachePayload {
-            normalized_prompt: normalized_prompt.to_string(),
-            response: response.to_string(),
-        };
-
-        match serde_json::to_value(payload) {
-            Ok(JsonValue::Object(map)) => {
-                let point_id = Uuid::new_v4().to_string();
-                let point = PointStruct::new(point_id, embedding, map);
-                let upsert_op = qdrant_client::qdrant::UpsertPointsBuilder
-                    ::new(&self.cache_qdrant_collection, vec![point])
-                    .build();
-
-                match qdrant_client_arc.upsert_points(upsert_op).await {
-                    Ok(_) => info!("📝 Cached response in Qdrant (normalized key vector)"),
-                    Err(e) => error!("Failed to update Qdrant cache: {}", e),
-                }
-            }
-            Ok(_) | Err(_) => warn!("Failed to serialize/convert cache payload for Qdrant"),
-        }
-    }
-
     pub async fn process_message(
         &self,
         conversation_id: &str,
         message: &str
     ) -> Result<String, Box<dyn Error + Send + Sync>> {
-        let normalized_message = message.trim().to_lowercase();
-        info!("ℹ️ Normalized message for cache lookup: '{}'", normalized_message);
-
-        if let Some(cached_response) = self.check_redis_cache(&normalized_message).await? {
-            if let Err(e) = self.history_store.add_message(conversation_id, "user", message).await {
-                warn!("History write (user) failed: {}", e);
-            }
-            if
-                let Err(e) = self.history_store.add_message(
-                    conversation_id,
-                    "assistant",
-                    &cached_response
-                ).await
-            {
-                warn!("History write (assistant) failed: {}", e);
-            }
-            return Ok(cached_response);
-        }
-
-        let qdrant_hit = self.check_qdrant_cache(&normalized_message).await?;
-        let mut maybe_embedding = None;
-
-        if let Some((cached_response, embedding_used)) = qdrant_hit {
-            if !cached_response.is_empty() {
-                self.prime_redis_cache(&normalized_message, &cached_response).await;
-                if
-                    let Err(e) = self.history_store.add_message(
-                        conversation_id,
-                        "user",
-                        message
-                    ).await
-                {
-                    warn!("History write (user) failed: {}", e);
-                }
-                if
-                    let Err(e) = self.history_store.add_message(
-                        conversation_id,
-                        "assistant",
-                        &cached_response
-                    ).await
-                {
-                    warn!("History write (assistant) failed: {}", e);
-                }
-                return Ok(cached_response);
-            } else {
-                maybe_embedding = Some(embedding_used);
-            }
-        }
-        info!("ℹ️ Cache Miss. Proceeding with LLM call...");
-        let response_content = self
-            .execute_llm_interaction(conversation_id, message).await
-            .map_err(|e| {
-                error!("LLM interaction error: {}", e);
-                e
-            })?;
+        let normalized = message.trim().to_lowercase();
+        info!("ℹ️ Normalized message for cache lookup: '{}'", normalized);
 
         if self.enable_cache {
-            self.prime_redis_cache(&normalized_message, &response_content).await;
-            let embedding_to_use = if let Some(e) = maybe_embedding {
-                e
-            } else {
-                self.embedding_client.embed(&normalized_message).await?.embedding
-            };
-            self.update_qdrant_cache(
-                &normalized_message,
-                &response_content,
-                embedding_to_use
-            ).await;
+            if let Some((resp, emb)) =
+                cache::check(&self.cache, &normalized, &*self.embedding_client).await?
+            {
+                info!("✅ Cache Hit");
+                self.history_store.add_message(conversation_id, "user", message).await?;
+                self.history_store.add_message(conversation_id, "assistant", &resp).await?;
+                return Ok(resp.to_string());
+            }
+        }
+
+        info!("ℹ️ Cache Miss. Proceeding with LLM call…");
+        let reply = self.execute_llm_interaction(conversation_id, message).await?;
+
+        if self.enable_cache {
+            let emb_to_use = self.embedding_client.embed(&normalized).await?.embedding;
+            cache::update(&self.cache, &normalized, &reply, emb_to_use).await?;
         }
 
         self.history_store.add_message(conversation_id, "user", message).await?;
-        self.history_store.add_message(conversation_id, "assistant", &response_content).await?;
+        self.history_store.add_message(conversation_id, "assistant", &reply).await?;
 
-        Ok(response_content)
+        Ok(reply)
     }
 
     pub async fn reload_prompts_if_changed(
@@ -651,4 +406,6 @@ impl AIAgent {
         info!("Schema successfully reloaded");
         Ok(true)
     }
+
+   
 }

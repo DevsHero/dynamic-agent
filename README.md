@@ -5,6 +5,8 @@
 
 Dynamic Agent is a flexible and configurable AI agent framework built in Rust. It provides a foundation for creating Retrieval-Augmented Generation (RAG) agents that can interact with users over WebSockets, leveraging multiple LLM providers and vector stores.
 
+**Live Demo:** Experience Dynamic Agent in action at [thanon.dev/chat](https://thanon.dev/chat) (powered by the [Leptos Portfolio Admin](https://github.com/DevsHero/leptos_portfolio_admin) frontend).
+
 ## Key Features
 
 *   **Multi-LLM Support:** Integrates with various Large Language Model providers for chat completion, text embedding, and query generation.
@@ -14,20 +16,22 @@ Dynamic Agent is a flexible and configurable AI agent framework built in Rust. I
     *   Supported: Redis, Qdrant, Chroma, Milvus, SurrealDB, Pinecone.
 *   **Configurable RAG Pipeline:**
     *   Define agent behavior, intents, and prompt templates using `json/prompts.json`.
-    *   Specify the structure of your vector data using `json/index_schema.json`.
+    *   `vector-nexus` automatically detects your vector data structure, eliminating manual `index_schema.json` creation.
     *   Supports LLM-driven intent classification and dynamic RAG query generation.
 *   **Conversation History:** Persists conversation history using Redis, Qdrant, or in-memory storage.
-*   **Caching Layer:** Optional Redis (exact match) and Qdrant (semantic match) caching to improve performance and reduce LLM costs.
+*   **Two-Tier Caching System:** Implements a hybrid caching approach combining Redis (for exact matches) and Qdrant (for semantic similarity matches), reducing LLM costs and improving response times.
+*   **Dynamic Topic Resolution:** Uses a cascading prompt system to determine the most relevant data indexes for queries, with primary and fallback resolution mechanisms for handling ambiguous queries.
 *   **Flexible Configuration:** Configure all aspects using a `.env` file, with overrides possible via command-line arguments.
 *   **WebSocket Interface:** Communicates with clients via a WebSocket server, supporting optional TLS (WSS) for secure connections.
 *   **Authentication:** Optional API key authentication for securing the WebSocket server endpoint.
+*   **Frontend Integration:** Designed to work seamlessly with frontend applications, such as the [Leptos Portfolio Admin](https://github.com/DevsHero/leptos_portfolio_admin) project.
 
 ## Prerequisites
 
 *   **Rust:** Install the Rust toolchain via [rustup](https://rustup.rs/).
 *   **LLM Provider:** Access to at least one supported LLM (e.g., Ollama running locally, an OpenAI API key).
-*   **Vector Store:** Access to a running instance of your chosen vector store (e.g., Redis, Qdrant).
-*   **Redis (Optional):** Required if using Redis for history persistence or caching.
+*   **Vector Store:** Access to a running instance of your chosen vector store (e.g., Qdrant).
+*   **Redis:** Access to a running Redis instance (required for history persistence and/or caching if configured).
 
 ## Getting Data Ready (Integration with db2vec & vector-nexus)
 
@@ -50,70 +54,89 @@ With these steps completed, Dynamic Agent, powered by `vector-nexus`, will be re
 
 ## Configuration
 
-1.  **Environment Variables (`.env`)**
-    *   Create a `.env` file in the project root (you can copy `.env.example` if one exists).
-    *   Configure connection details and credentials for your chosen LLM providers, vector store, history store, and caching layer.
-    *   Set the server address and optional API key.
-    *   Example essential variables:
-        ```dotenv
-        # --- LLMs ---
-        CHAT_LLM_TYPE=ollama
-        CHAT_BASE_URL="http://localhost:11434" # Or OpenAI URL, etc.
-        CHAT_API_KEY="" # Required for OpenAI, Anthropic, etc.
-        CHAT_MODEL="llama3.2"
+Configuration is primarily handled via environment variables, with JSON files for prompt and query structures.
 
-        EMBEDDING_LLM_TYPE=ollama
-        EMBEDDING_BASE_URL="http://localhost:11434"
-        EMBEDDING_API_KEY=""
-        EMBEDDING_MODEL="nomic-embed-text" # Should match model used in db2vec
-
-        # --- Vector Store (Example: Qdrant, matching db2vec output) ---
-        VECTOR_TYPE=qdrant
-        VECTOR_HOST=http://localhost:6333
-        VECTOR_SECRET="" # API Key if needed
-        VECTOR_INDEX_NAME=my_documents # Should match index created by db2vec
-        VECTOR_DIMENSION=768 # Match your embedding model
-
-        # --- History (Example: Redis) ---
-        HISTORY_TYPE=redis
-        HISTORY_HOST=redis://127.0.0.1:6379
-
-        # --- Server ---
-        SERVER_ADDR=127.0.0.1:4000
-        # SERVER_API_KEY=your-secret-key # Uncomment to enable auth
-        # TLS_CERT_PATH=/path/to/cert.pem # Uncomment for WSS
-        # TLS_KEY_PATH=/path/to/key.pem   # Uncomment for WSS
-
-        # --- Caching (Optional) ---
-        ENABLE_CACHE=true
-        CACHE_REDIS_URL=redis://127.0.0.1:6379/1
-        CACHE_QDRANT_URL=http://localhost:6334
-        # CACHE_QDRANT_API_KEY= # Qdrant cache API key if needed
-        CACHE_QDRANT_COLLECTION=agent_cache
-        CACHE_SIMILARITY_THRESHOLD=0.95
-        CACHE_REDIS_TTL=3600
-        ```
-    *   Refer to the `src/cli/mod.rs` file or run with `--help` for a full list of environment variables and their corresponding CLI flags.
+1.  **Environment Variables (`.env` or `.env-agent`)**
+    *   Create a `.env` file in the project root for native runs, or a `.env-agent` file for Docker Compose setups. You can copy from `.env.example` as a starting point.
+    *   This file configures LLM providers, vector store connections, history store, caching, server address, API keys, etc.
+    *   **Key Variables to Set:**
+        *   `CHAT_LLM_TYPE`, `CHAT_BASE_URL`, `CHAT_MODEL`
+        *   `EMBEDDING_LLM_TYPE`, `EMBEDDING_BASE_URL`, `EMBEDDING_MODEL`
+        *   `VECTOR_TYPE`, `VECTOR_HOST`, `VECTOR_INDEX_NAME`, `VECTOR_DIMENSION`
+        *   `HISTORY_TYPE`, `HISTORY_HOST`
+        *   `SERVER_ADDR`
+        *   (Optional) `SERVER_API_KEY`, `ENABLE_CACHE`, `CACHE_REDIS_URL`, `CACHE_QDRANT_URL`, etc.
+    *   Refer to `.env.example` for a comprehensive list of all available variables and their descriptions.
+    *   Values set directly as environment variables in Docker Compose or via CLI arguments will override those in the `.env` or `.env-agent` file.
 
 2.  **JSON Configuration Files**
-    *   **`json/prompts.json`:** Define agent intents (e.g., `PROFILE_INFO`, `GENERAL_CHAT`), the action associated with each intent (`call_rag_tool`, `general_llm_call`), and the prompt templates used for tasks like intent classification and RAG response generation.
-    *   **`json/index_schema.json`:** Describe the structure of your data within the vector store (as created by `db2vec`). List each index/collection name and the fields it contains. This is crucial for the RAG process. Example:
-        ```json
-        {
-          "indexes": [
-            {
-              "name": "my_documents", // Matches VECTOR_INDEX_NAME
-              "fields": [
-                "text_chunk", // Field containing the text data
-                "source_url", // Example metadata field
-                "timestamp"   // Example metadata field
-              ]
-            }
-            // Add other indexes if applicable
-          ]
-        }
-        ```
-    *   **`json/query/*.json`:** (Optional) Contains function schemas specific to vector stores, potentially used for advanced query generation (though currently marked as unused in the RAG engine).
+    *   **`json/prompts.json`:** Defines agent intents, actions, and core prompt templates.
+    *   **`json/query/*.json`:** (Optional) Schemas for advanced vector store query generation.
+
+## Advanced Features
+
+### Two-Tier Caching System
+
+Dynamic Agent implements a sophisticated two-tier caching strategy to improve performance and reduce LLM costs:
+
+1. **Redis Cache (Tier 1):**
+   * Provides fast exact-match lookups for previously seen queries.
+   * Configured with a TTL to automatically expire cache entries.
+   * Extremely fast response time when exact matches are found.
+
+2. **Qdrant Semantic Cache (Tier 2):**
+   * Used as a fallback when exact matches aren't found in Redis.
+   * Stores embeddings of previous queries for semantic similarity matching.
+   * Can respond to questions with the same meaning but different wording.
+   * Uses a configurable similarity threshold to ensure relevant responses.
+
+**Cache Processing Flow:**
+1. User query is normalized and checked against Redis for an exact match.
+2. If no exact match, the query is embedded and checked against Qdrant for a semantic match.
+3. If no matches are found in either cache, the query proceeds to the LLM.
+4. The LLM's response is then stored in both Redis (for exact match caching) and Qdrant (for semantic caching) to benefit future queries.
+
+**Configuration:**
+```dotenv
+# Enable/disable the cache system
+ENABLE_CACHE=true
+
+# Redis cache configuration
+CACHE_REDIS_URL=redis://127.0.0.1:6379 # Or redis://host.docker.internal:6379 from Docker
+CACHE_REDIS_TTL=3600  # TTL in seconds
+
+# Qdrant semantic cache configuration
+CACHE_QDRANT_URL=http://localhost:6334 # Or http://host.docker.internal:6334 from Docker
+CACHE_QDRANT_API_KEY=  # Leave empty if no auth required
+CACHE_QDRANT_COLLECTION=prompt_response_cache
+CACHE_SIMILARITY_THRESHOLD=0.85  # 0.0-1.0, higher is more strict
+```
+
+### Dynamic Topic Resolution
+
+The agent uses a sophisticated prompt-based system to determine which data index is most relevant to a user's query:
+
+1. **Primary Topic Inference:**
+   * Uses an LLM to analyze the user question and available schema.
+   * Attempts to match the question to the most relevant index.
+
+2. **Fallback Resolution:**
+   * If primary inference returns "None" or an invalid index, a fallback mechanism is triggered.
+   * Uses a specialized prompt that focuses on indirect relationships and contextual understanding.
+   * Maps implied concepts to actual indexes (e.g., "age" → profile index, which contains `birth_date`).
+
+**Customizing Topic Resolution:**
+You can customize how the agent resolves topics by modifying prompt templates in `json/prompts.json`:
+```json
+{
+  "query_templates": {
+    "rag_topic_inference": "You are given a JSON schema that defines an array `indexes`...",
+    "fallback_topic_resolver": "You are helping with database topic selection when our primary classifier returns 'None'..."
+    // ... other templates
+  }
+}
+```
+This prompt-based approach makes the agent truly dynamic, allowing it to adapt to different schemas and query types without code changes.
 
 ## Building
 
@@ -123,75 +146,156 @@ cargo build --release
 
 ## Running
 
-Execute the compiled binary. Configuration options can be provided via command-line arguments, which will override values set in the `.env` file.
+### Natively
+
+Execute the compiled binary. Use a `.env` file for configuration. CLI arguments can override `.env` settings.
 
 ```bash
-# Run with defaults from .env
+# Run with .env settings
 ./target/release/dynamic-agent
 
-# Override server address and vector store type
-./target/release/dynamic-agent --server-addr 0.0.0.0:8080 --vector-type qdrant --vector-host http://localhost:6333
+# Override specific settings
+./target/release/dynamic-agent --server-addr 0.0.0.0:8080 --chat-model "new-model"
 
-# See all available options
+# See all CLI options
 ./target/release/dynamic-agent --help
 ```
 
-The server will start listening on the configured `SERVER_ADDR`.
+### With Docker Compose
+
+We offer two Docker Compose setups:
+
+1.  **All-in-One (`docker-compose-full.yml`):** Includes Dynamic Agent, Redis, and Qdrant. Recommended for easy development.
+2.  **Standalone Agent (`docker-compose.yml`):** Runs only the Dynamic Agent. Use if Redis/Qdrant are managed externally.
+
+#### Option 1: All-in-One Setup (`docker-compose-full.yml`)
+
+**Prerequisites:** Docker & Docker Compose.
+
+**Steps:**
+
+1.  **Configure via `.env-agent`:**
+    Create a `.env-agent` file. This is the primary way to configure the agent and its connections to the Redis/Qdrant services within the Docker network.
+    *   **Example crucial settings in `.env-agent` for `docker-compose-full.yml`:**
+        ```dotenv
+        # LLMs (e.g., Ollama on host)
+        CHAT_BASE_URL="http://host.docker.internal:11434"
+        EMBEDDING_BASE_URL="http://host.docker.internal:11434"
+
+        # Vector Store (uses 'qdrant' service from docker-compose-full.yml)
+        VECTOR_HOST=http://qdrant:6333
+
+        # History (uses 'redis' service from docker-compose-full.yml)
+        HISTORY_HOST=redis://redis:6379
+
+        # Caching (uses 'redis' & 'qdrant' services)
+        ENABLE_CACHE=true
+        CACHE_REDIS_URL=redis://redis:6379/1
+        CACHE_QDRANT_URL=http://qdrant:6333
+        ```
+    *   *Refer to `.env.example` for all other variables.*
+
+2.  **Run Docker Compose:**
+    The `docker-compose-full.yml` defines the `dynamic-agent`, `qdrant`, and `redis` services.
+    ```bash
+    docker-compose -f docker-compose-full.yml up -d
+    ```
+    *   To override settings from `.env-agent` directly in `docker-compose-full.yml` (less common for full setup):
+        ```dockercompose
+        # In docker-compose-full.yml under dynamic-agent service:
+        # environment:
+        #   CHAT_MODEL: "override_model_here"
+        #   VECTOR_INDEX_NAME: "override_index_name"
+        ```
+
+#### Option 2: Standalone Agent (`docker-compose.yml`)
+
+**Prerequisites:** Docker & Docker Compose; external Redis, Qdrant, and LLM.
+
+**Steps:**
+
+1.  **Configure via `.env-agent`:**
+    Create `.env-agent` pointing to your externally managed services.
+    *   **Example crucial settings in `.env-agent` for standalone `docker-compose.yml`:**
+        ```dotenv
+        # LLMs (e.g., Ollama on host)
+        CHAT_BASE_URL="http://host.docker.internal:11434" # Or actual external IP/hostname
+
+        # Vector Store (external Qdrant)
+        VECTOR_HOST=http://host.docker.internal:6333 # Or actual external IP/hostname
+
+        # History (external Redis)
+        HISTORY_HOST=redis://host.docker.internal:6379 # Or actual external IP/hostname
+        ```
+    *   *Refer to `.env.example` for all other variables.*
+
+2.  **Run Docker Compose:**
+    The `docker-compose.yml` defines only the `dynamic-agent` service.
+    ```bash
+    docker-compose -f docker-compose.yml up -d
+    # Or simply: docker-compose up -d
+    ```
+    *   To override settings from `.env-agent` directly in `docker-compose.yml`:
+        ```dockercompose
+        # In docker-compose.yml under dynamic-agent service:
+        # environment:
+        #   CHAT_MODEL: "override_model_for_standalone"
+        #   SERVER_API_KEY: "direct_api_key_if_not_in_env_agent"
+        ```
 
 ## Connecting & Interacting
 
-1. **Connect:** Use a WebSocket client to connect to the agent at the address specified by `SERVER_ADDR`.
-   * Use `ws://<host>:<port>` for standard connections.
-   * Use `wss://<host>:<port>` if TLS is enabled via `TLS_CERT_PATH` and `TLS_KEY_PATH`.
+1.  **Connect:** Use a WebSocket client to connect to the agent.
+    *   If running natively: `ws://<SERVER_ADDR>` (e.g., `ws://127.0.0.1:4000`).
+    *   If running with Docker: `ws://localhost:4000` (since port 4000 is mapped).
+    *   Use `wss://` if TLS is enabled.
 
-2. **Authentication:** The server uses HMAC-based authentication for secure WebSocket connections. Clients must include the following query parameters in the WebSocket URL:
-   * `ts`: A UNIX timestamp (in seconds).
-   * `sig`: An HMAC-SHA256 signature of the `ts` value, generated using the shared secret key (`SERVER_API_KEY`).
+2.  **Authentication:** The server uses HMAC-based authentication for secure WebSocket connections. Clients must include the following query parameters in the WebSocket URL:
+    *   `ts`: A UNIX timestamp (in seconds).
+    *   `sig`: An HMAC-SHA256 signature of the `ts` value, generated using the shared secret key (`SERVER_API_KEY` from your `.env` or `.env-agent` file).
 
-   Example WebSocket URL:
-   ```
-   ws://<host>:<port>/?ts=1746639884&sig=24efed14e1616e403435034f77899c10441218083d9d047f8aa2435901d486d5
-   ```
+    Example WebSocket URL:
+    ```
+    ws://localhost:4000/?ts=1746639884&sig=24efed14e1616e403435034f77899c10441218083d9d047f8aa2435901d486d5
+    ```
 
-   **Steps to Generate the HMAC Signature:**
-   1. Compute the current UNIX timestamp (e.g., `ts = Math.floor(Date.now() / 1000)` in JavaScript).
-   2. Use the shared secret key (`SERVER_API_KEY`) to compute the HMAC-SHA256 signature of the `ts` value.
-   3. Encode the resulting HMAC as a hexadecimal string and include it as the `sig` parameter.
+    **Steps to Generate the HMAC Signature:**
+    1.  Compute the current UNIX timestamp (e.g., `ts = Math.floor(Date.now() / 1000)` in JavaScript).
+    2.  Use the shared secret key (`SERVER_API_KEY`) to compute the HMAC-SHA256 signature of the `ts` value.
+    3.  Encode the resulting HMAC as a hexadecimal string and include it as the `sig` parameter.
 
-   Example JavaScript Code:
-   ```javascript
-   const ts = Math.floor(Date.now() / 1000).toString();
-   const secret = "your-server-api-key"; // Replace with your SERVER_API_KEY
-   const encoder = new TextEncoder();
-   const key = await crypto.subtle.importKey(
-       "raw",
-       encoder.encode(secret),
-       { name: "HMAC", hash: "SHA-256" },
-       false,
-       ["sign"]
-   );
-   const signature = await crypto.subtle.sign(
-       "HMAC",
-       key,
-       encoder.encode(ts)
-   );
-   const sig = Array.from(new Uint8Array(signature))
-       .map(b => b.toString(16).padStart(2, "0"))
-       .join("");
+    Example JavaScript Code:
+    ```javascript
+    const ts = Math.floor(Date.now() / 1000).toString();
+    const secret = "your-server-api-key";
+    const encoder = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+        "raw",
+        encoder.encode(secret),
+        { name: "HMAC", hash: "SHA-256" },
+        false,
+        ["sign"]
+    );
+    const signature = await crypto.subtle.sign(
+        "HMAC",
+        key,
+        encoder.encode(ts)
+    );
+    const sig = Array.from(new Uint8Array(signature))
+        .map(b => b.toString(16).padStart(2, "0"))
+        .join("");
 
-   const ws = new WebSocket(`ws://<host>:<port>/?ts=${ts}&sig=${sig}`);
-   ```
+    const ws = new WebSocket(`ws://localhost:4000/?ts=${ts}&sig=${sig}`); // Adjust host/port if needed
+    ```
 
-3. **Send Messages:** Send user queries as messages over the WebSocket connection. The expected format is typically a simple text message or a JSON structure depending on the client implementation (e.g., `{"type": "message", "payload": "Tell me about your experience."}`).
+3.  **Send Messages:** Send user queries as messages over the WebSocket connection. The expected format is typically a simple text message or a JSON structure depending on the client implementation (e.g., `{"type": "message", "payload": "Tell me about your experience."}`).
 
-4. **Receive Responses:** The agent will process the message, potentially performing RAG and LLM calls, and send the response back over the same WebSocket connection.
+4.  **Receive Responses:** The agent will process the message, potentially performing RAG and LLM calls, and send the response back over the same WebSocket connection.
 
 ## Contributing
 
-<!-- Add contribution guidelines if desired -->
 Contributions are welcome! Please open an issue or submit a pull request.
 
 ## License
 
-<!-- Specify your license, e.g., MIT, Apache 2.0 -->
-This project is licensed under the [Your License Name] License - see the LICENSE file for details.
+MIT

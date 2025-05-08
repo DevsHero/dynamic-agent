@@ -183,3 +183,15 @@ pub fn get_rag_final_prompt(
             .replace("{user_question}", user_question)
     )
 }
+
+pub fn get_fallback_topic_prompt(
+    config: &PromptConfig,
+    schema_summary: &str,
+    user_question: &str
+) -> Result<String, PromptError> {
+    let template = get_query_template(config, "fallback_topic_resolver")?;
+    
+    Ok(template
+        .replace("{schema_summary}", schema_summary)
+        .replace("{user_question}", user_question))
+}

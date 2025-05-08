@@ -5,15 +5,8 @@ services:
     ports:
       - "4000:4000"
     env_file:
-      - .env-agent
+      - .env
     environment:
-      SERVER_ADDR: "0.0.0.0:4000"
-      VECTOR_TYPE: "qdrant"
-      VECTOR_HOST: "http://host.docker.internal:6334"
-      VECTOR_INDEX_NAME: "my_documents"
-      VECTOR_DIMENSION: "768"
-      HISTORY_TYPE: "qdrant"
-      HISTORY_HOST: "http://host.docker.internal:6334"
       VECTOR_SKIP_VERSION_CHECK: "true" 
     extra_hosts:
       - "host.docker.internal:host-gateway"

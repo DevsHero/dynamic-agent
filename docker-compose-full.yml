@@ -1,0 +1,66 @@
+services:
+  dynamic-agent:
+    image: hero0ncloud/dynamic-agent:latest
+    platform: linux/amd64
+    container_name: dynamic-agent
+    ports:
+      - "4000:4000"
+    env_file:
+      - .env
+    environment:
+      # --- Server ---
+      SERVER_ADDR: "0.0.0.0:4000"
+
+      # --- Vector Store (Qdrant service) ---
+      VECTOR_TYPE: "qdrant"
+      VECTOR_HOST: "http://qdrant:6334" 
+      VECTOR_INDEX_NAME: "my_documents"
+      VECTOR_DIMENSION: "768"
+      VECTOR_SKIP_VERSION_CHECK: "true"
+
+      # --- Chat LLM ---
+      CHAT_LLM_TYPE: "ollama"
+      CHAT_BASE_URL: "http://host.docker.internal:11434"
+
+      # --- Embedding LLM ---
+      EMBEDDING_LLM_TYPE: "ollama"
+      EMBEDDING_BASE_URL: "http://host.docker.internal:11434"
+      
+      # --- History Store (Qdrant service) ---
+      HISTORY_TYPE: "qdrant"
+      HISTORY_HOST: "http://qdrant:6334" 
+
+      # --- Caching ---
+      ENABLE_CACHE: "true"
+      CACHE_REDIS_URL: "redis://redis:6379"
+      CACHE_QDRANT_URL: "http://qdrant:6334" 
+      CACHE_QDRANT_COLLECTION: "agent_cache"
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    platform: linux/amd64 
+    container_name: qdrant
+    ports:
+      - "6333:6333" 
+      - "6334:6334"
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+
+    restart: unless-stopped
+
+  redis:
+    image: redis:latest
+    platform: linux/amd64
+    container_name: redis
+    ports:
+      - "6379:6379"
+
+    restart: unless-stopped
+
+volumes:
+  qdrant_storage:
