@@ -242,7 +242,6 @@ You can customize how the agent resolves topics by modifying prompt templates in
     "fallback_topic_resolver": "You are helping with database topic selection when our primary classifier returns 'None'..."
     // ... other templates
   }
-}
 ```
 This prompt-based approach makes the agent truly dynamic, allowing it to adapt to different schemas and query types without code changes.
 

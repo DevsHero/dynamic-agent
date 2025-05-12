@@ -271,52 +271,62 @@ pub async fn handle_connection<S>(
                     Message::Text(text) => {
                         match serde_json::from_str::<ClientMessage>(&text) {
                             Ok(ClientMessage::Chat { content }) => {
-                                let processing_msg = ServerMessage::Processing;
-                                let processing_json = serde_json
-                                    ::to_string(&processing_msg)
-                                    .unwrap();
-                                if let Err(e) = tx.send(Message::Text(processing_json)).await {
-                                    error!("Error sending processing status to {}: {}", peer, e);
+                                let typing_msg = ServerMessage::Typing;
+                                if let Err(e) = tx.send(Message::Text(serde_json::to_string(&typing_msg).unwrap())).await {
+                                    error!("Error sending typing status to {}: {}", peer, e);
                                     break;
                                 }
 
-                                let response_result = agent
+                                let stream_result = agent
                                     .lock().await
-                                    .process_message(&conversation_id, &content).await;
+                                    .process_message_stream(&conversation_id, &content)
+                                    .await;
 
-                                let response_timestamp = Utc::now().timestamp();
+                                match stream_result {
+                                    Ok(mut stream) => {
+                                        while let Some(chunk_res) = stream.next().await {
+                                            match chunk_res {
+                                                Ok(fragment) => {
+                                                    let partial = ServerMessage::Partial { 
+                                                        content: fragment 
+                                                    };
+                                                    let json = serde_json::to_string(&partial).unwrap();
+                                                    if let Err(e) = tx.send(Message::Text(json)).await {
+                                                        error!("Error sending fragment to {}: {}", peer, e);
+                                                        break;
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    error!("Stream error for {}: {}", peer, e);
+                                                    let error_msg = ServerMessage::Error {
+                                                        message: format!("Stream error: {}", e),
+                                                    };
+                                                    let json = serde_json::to_string(&error_msg).unwrap();
+                                                    if let Err(e_inner) = tx.send(Message::Text(json)).await {
+                                                        error!("Error sending stream error to {}: {}", peer, e_inner);
+                                                    }
+                                                    break;
+                                                }
+                                            }
+                                        }
 
-                                match response_result {
-                                    Ok(response_content) => {
-                                        let server_msg = ServerMessage::Response {
-                                            content: response_content,
-                                            timestamp: response_timestamp,
+                                        let done_msg = ServerMessage::Done {
+                                            timestamp: Utc::now().timestamp(),
                                         };
-                                        let json = serde_json::to_string(&server_msg).unwrap();
+                                        let json = serde_json::to_string(&done_msg).unwrap();
                                         if let Err(e) = tx.send(Message::Text(json)).await {
-                                            error!("Error sending message to {}: {}", peer, e);
-                                            break;
+                                            error!("Error sending done message to {}: {}", peer, e);
                                         }
                                     }
                                     Err(e) => {
-                                        let error_message =
-                                            format!("Error processing message: {}", e);
-                                        error!(
-                                            "Agent processing error for {}: {}",
-                                            peer,
-                                            error_message
-                                        );
+                                        let error_message = format!("Error initiating stream: {}", e);
+                                        error!("Agent streaming error for {}: {}", peer, error_message);
                                         let error_msg = ServerMessage::Error {
                                             message: error_message,
                                         };
                                         let json = serde_json::to_string(&error_msg).unwrap();
                                         if let Err(e_inner) = tx.send(Message::Text(json)).await {
-                                            error!(
-                                                "Error sending error message to {}: {}",
-                                                peer,
-                                                e_inner
-                                            );
-                                            break;
+                                            error!("Error sending error message to {}: {}", peer, e_inner);
                                         }
                                     }
                                 }

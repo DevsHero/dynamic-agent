@@ -158,6 +158,10 @@ pub struct Args {
     #[arg(long, env = "SERVER_API_KEY")]
     pub server_api_key: Option<String>,
 
+    /// Maximum allowed size for WebSocket messages in bytes.
+    #[arg(long, env = "MAX_MESSAGE_SIZE", default_value = "1048576")]
+    pub max_message_size: usize,
+
     /// Directory containing vector store function schema definition files (e.g., qdrant.json, redis.json).
     #[arg(long, env = "FUNCTION_SCHEMA_DIR", default_value = "json/query")]
     pub function_schema_dir: String,
@@ -222,7 +226,6 @@ pub struct Args {
     /// Required if 'enable_remote_prompts' is true.
     #[arg(long, env = "REMOTE_PROMPTS_SA_KEY_PATH", default_value = "firebase-sa.json")]
     pub remote_prompts_sa_key_path: Option<String>,
-
 
     /// Port for HTTP webhook endpoints (different from WebSocket port)
     #[arg(long, env = "HTTP_PORT" , default_value = "4200")]

@@ -1,6 +1,6 @@
 [package]
 name = "dynamic-agent"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 authors = ["Thanon Aphithanawat"]
 
@@ -32,7 +32,7 @@ qdrant-client = "1.14"
 redis = { version = "0.25", default-features = false, features = ["aio", "tokio-comp"] }
 reqwest = { version = "0.12", features = ["json"] }
 async-trait = "0.1"
-rllm = { version = "1.1" }
+rllm = { version = "1.1"  }
 strsim = "0.11"
 governor = "0.10"
 tokio-rustls = "0.26"
@@ -49,3 +49,4 @@ hyper = { version = "1.6.0", features = ["full"] }
 tower = "0.5.2"
 tower-http = { version = "0.6.2", features = ["cors"] }
 axum-server = { version = "0.7.2", features = ["tls-rustls"] }
+tokio-stream = "0.1.17"

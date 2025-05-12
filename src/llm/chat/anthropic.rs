@@ -10,6 +10,9 @@ use rllm::{
 
 pub struct AnthropicChatClient {
     llm: Box<dyn LLMProvider + Send + Sync>,
+    api_key: String,
+    model: String,
+    base_url: Option<String>,
 }
 
 impl AnthropicChatClient {
@@ -24,11 +27,10 @@ impl AnthropicChatClient {
 
         let mut builder = LLMBuilder::new()
             .backend(LLMBackend::Anthropic)
-            .api_key(api_key)
+            .api_key(api_key.clone())  
             .model(&chat_model)
-            .stream(false);
-
-        if let Some(url) = base_url {
+            .stream(false); 
+        if let Some(url) = &base_url {  
             builder = builder.base_url(url);
         }
         if let Some(tokens) = max_tokens {
@@ -40,7 +42,12 @@ impl AnthropicChatClient {
 
         let llm_provider = builder.build()?;
 
-        Ok(Self { llm: llm_provider })
+        Ok(Self { 
+            llm: llm_provider,
+            api_key,
+            model: chat_model,
+            base_url,
+        })
     }
 
     pub fn from_config(config: &LlmConfig) -> Result<Self, Box<dyn StdError + Send + Sync>> {
@@ -71,5 +78,25 @@ impl ChatClient for AnthropicChatClient {
         let response_text = self.llm.chat(&messages).await?;
 
         Ok(CompletionResponse { response: response_text.to_string() })
+    }
+    
+    fn get_api_key(&self) -> String {
+        self.api_key.clone()
+    }
+    
+    fn get_model(&self) -> String {
+        self.model.clone()
+    }
+    
+    fn get_base_url(&self) -> Option<String> {
+        self.base_url.clone()
+    }
+    
+    fn get_llm_backend(&self) -> LLMBackend {
+        LLMBackend::Anthropic
+    }
+    
+    fn supports_native_streaming(&self) -> bool {
+        false
     }
 }

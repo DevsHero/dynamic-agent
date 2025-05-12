@@ -1,7 +1,6 @@
 pub mod agent;
 pub mod models;
-pub mod server;
-pub mod websocket;
+pub mod server; 
 pub mod config;
 pub mod llm;
 pub mod cli;

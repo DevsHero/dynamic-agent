@@ -20,4 +20,14 @@ pub enum ServerMessage {
     },
     #[serde(rename = "processing")]
     Processing,
+    #[serde(rename = "typing")]
+    Typing,
+    #[serde(rename = "partial")]
+    Partial {
+        content: String,
+    },
+    #[serde(rename = "done")]
+    Done {
+        timestamp: i64,
+    },
 }

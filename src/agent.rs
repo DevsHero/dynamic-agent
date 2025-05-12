@@ -1,6 +1,7 @@
 use crate::history::{ format_history_for_prompt, initialize_history_store, HistoryStore };
 use crate::rag::rag::{ RagEngine, RagQueryArgs };
 
+use futures::{Stream, TryStreamExt};
 use vector_nexus::db::{
     VectorStore,
     get_store_type as get_vector_store_type,
@@ -22,6 +23,7 @@ use crate::cache::{self, CacheClients};
 
 use log::{ info, warn };
 use std::error::Error;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::fs;
 use std::time::SystemTime;
@@ -52,7 +54,7 @@ pub struct AIAgent {
     cache: CacheClients,
     prompts_path: String, 
 }
-
+ 
 impl AIAgent {
     async fn initialize_llm_clients(
         args: &Args
@@ -156,7 +158,23 @@ impl AIAgent {
         };
         create_vector_store(vector_store_config.clone()).await
     }
-
+  pub async fn process_message_stream(
+        &self,
+        conversation_id: &str,
+        message: &str,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Box<dyn std::error::Error + Send + Sync>>> + Send>>, Box<dyn std::error::Error + Send + Sync>> {
+        let conversation = self.history_store.get_conversation(
+            conversation_id,
+            HISTORY_FOR_PROMPT_LEN
+        ).await?;
+        let history_str = format_history_for_prompt(&conversation);
+        let final_prompt = format!("{}\n\nUser: {}", history_str, message);
+        
+        let stream = self.chat_client.stream_completion(&final_prompt).await?
+            .map_err(|e| e);
+        let boxed_stream: Pin<Box<dyn Stream<Item = Result<String, Box<dyn std::error::Error + Send + Sync>>> + Send>> = Box::pin(stream);
+        Ok(boxed_stream)
+    }
     async fn load_configs_and_schemas(
         args: &Args,
         vector_store: &Arc<dyn VectorStore>
