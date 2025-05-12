@@ -249,6 +249,8 @@ pub async fn handle_connection<S>(
 
     let mut buffer = String::new();
     let mut in_thinking_section = false;
+    let mut partial_close_tag = false;
+    let mut partial_open_tag = false; // Add this for tracking partial opening tags
 
     while let Some(msg) = rx.next().await {
         match msg {
@@ -306,8 +308,83 @@ pub async fn handle_connection<S>(
                                             match chunk_res {
                                                 Ok(fragment) => {
                                                     let text = fragment.as_str();
+                                                    
+                                                    // Check for split opening tag pattern
+                                                    if !in_thinking_section && partial_open_tag && 
+                                                       (text.starts_with(">") || text.starts_with("k>") || text.starts_with("nk>") || text.starts_with("ink>")) {
+                                                        
+                                                        partial_open_tag = false;
+                                                        in_thinking_section = true;
+                                                        
+                                                        // Get everything after the ">" character
+                                                        let after_tag_pos = text.find(">").unwrap_or(0) + 1;
+                                                        let after_tag = &text[after_tag_pos..];
+                                                        
+                                                        // Send as thinking fragment
+                                                        let msg = ServerMessage::ThinkingFragment { 
+                                                            content: after_tag.to_string() 
+                                                        };
+                                                        tx.send(Message::Text(serde_json::to_string(&msg).unwrap())).await.unwrap();
+                                                        
+                                                        buffer = after_tag.to_string();
+                                                        continue;
+                                                    }
+                                                    
                                                     buffer.push_str(text);
                                                     
+                                                    // Check for potential partial opening tag at end of buffer
+                                                    if !in_thinking_section && 
+                                                       (buffer.ends_with("<t") || buffer.ends_with("<th") || 
+                                                        buffer.ends_with("<thi") || buffer.ends_with("<thin") || 
+                                                        buffer.ends_with("<think")) {
+                                                        partial_open_tag = true;
+                                                        continue;
+                                                    }
+                                                    
+                                                    // Check for split closing tag pattern
+                                                    if in_thinking_section && !buffer.contains("</think>") {
+                                                        if buffer.ends_with("<") || (buffer.ends_with("</") && !text.starts_with("think>")) {
+                                                            partial_close_tag = true;
+                                                            continue;
+                                                        }
+                                                        
+                                                        if partial_close_tag && text.starts_with("think>") || text.starts_with("/think>") {
+                                                            in_thinking_section = false;
+                                                            partial_close_tag = false;
+                                                            
+                                                            // Get content before the partial tag
+                                                            let think_content = if buffer.ends_with("</") {
+                                                                &buffer[..buffer.len()-2]
+                                                            } else if buffer.ends_with("<") {
+                                                                &buffer[..buffer.len()-1]
+                                                            } else {
+                                                                buffer.as_str()
+                                                            };
+                                                            
+                                                            if !think_content.is_empty() {
+                                                                let think_msg = ServerMessage::ThinkingFragment { 
+                                                                    content: think_content.to_string() 
+                                                                };
+                                                                tx.send(Message::Text(serde_json::to_string(&think_msg).unwrap())).await.unwrap();
+                                                            }
+                                                            
+                                                            // Extract and send anything after the closing tag
+                                                            let after_tag_pos = text.find(">").unwrap_or(0) + 1;
+                                                            if after_tag_pos < text.len() {
+                                                                let after_content = &text[after_tag_pos..];
+                                                                if !after_content.is_empty() {
+                                                                    let clean_content = clean_response_text(after_content);
+                                                                    let part = ServerMessage::Partial { content: clean_content };
+                                                                    tx.send(Message::Text(serde_json::to_string(&part).unwrap())).await.unwrap();
+                                                                }
+                                                            }
+                                                            
+                                                            buffer.clear();
+                                                            continue;
+                                                        }
+                                                    }
+                                                    
+                                                    // Regular tag processing (intact tags)
                                                     if !in_thinking_section && buffer.contains("<think>") {
                                                         in_thinking_section = true;
                                                         let start_pos = buffer.find("<think>").unwrap();
@@ -334,18 +411,22 @@ pub async fn handle_connection<S>(
                                                         
                                                         in_thinking_section = false;
                                                         
-                                                        let after = &buffer[end_pos + "</think>".len()..];
+                                                        // Extract everything after the closing tag
+                                                        let after = buffer[end_pos + "</think>".len()..].to_string();
+                                                        buffer.clear();
+                                                        
+                                                        // Process post-thinking content as regular partial content
                                                         if !after.is_empty() {
+                                                            let clean_content = clean_response_text(&after);
                                                             let part = ServerMessage::Partial { 
-                                                                content: after.to_string() 
+                                                                content: clean_content 
                                                             };
                                                             tx.send(Message::Text(serde_json::to_string(&part).unwrap())).await.unwrap();
                                                         }
-                                                        
-                                                        buffer.clear();
                                                         continue;
                                                     }
                                                     
+                                                    // Flush buffer periodically to prevent buildup
                                                     if buffer.len() > 20 { 
                                                         if in_thinking_section {
                                                             let think_msg = ServerMessage::ThinkingFragment { 
@@ -353,8 +434,9 @@ pub async fn handle_connection<S>(
                                                             };
                                                             tx.send(Message::Text(serde_json::to_string(&think_msg).unwrap())).await.unwrap();
                                                         } else {
+                                                            let clean_content = clean_response_text(&buffer);
                                                             let part = ServerMessage::Partial { 
-                                                                content: buffer.clone() 
+                                                                content: clean_content 
                                                             };
                                                             tx.send(Message::Text(serde_json::to_string(&part).unwrap())).await.unwrap();
                                                         }
@@ -498,4 +580,39 @@ where
     }
     
     Ok(())
+}
+
+fn clean_response_text(text: &str) -> String {
+    let mut cleaned = text.to_string();
+    
+    // Remove LaTeX formatting
+    cleaned = cleaned.replace("\\boxed{", "").replace("\\text{", "");
+    
+    // Remove HTML/markdown formatting
+    cleaned = cleaned.replace("\\<strong>", "").replace("\\</strong>", "")
+                     .replace("**Final Answer:**", "")
+                     .replace("**", "");
+    
+    // Remove common meta-commentary patterns
+    let meta_patterns = [
+        "The user's input is",
+        "The appropriate response",
+        "Final Answer:",
+        "In response to",
+        "I'll respond with"
+    ];
+    
+    for pattern in &meta_patterns {
+        if let Some(pos) = cleaned.find(pattern) {
+            // Find the end of this meta-commentary section
+            if let Some(end_pos) = cleaned[pos..].find("\n\n") {
+                cleaned = cleaned[pos + end_pos + 2..].to_string();
+            }
+        }
+    }
+    
+    // Clean up excessive whitespace and trim
+    cleaned = cleaned.replace("\n\n\n", "\n\n").trim().to_string();
+    
+    cleaned
 }

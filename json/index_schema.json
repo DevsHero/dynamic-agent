@@ -30,8 +30,8 @@
     },
     {
       "fields": [
-        "timestamp",
-        "conversation_id"
+        "conversation_id",
+        "timestamp"
       ],
       "name": "default_index",
       "prefix": "qdrant:default_index"
