@@ -110,7 +110,7 @@ struct OpenAIDelta {
 
 #[derive(Deserialize)]
 struct OpenAIResponsesResponse {
-    result: String,
+    _result: String,
 }
 
 #[derive(Deserialize)]

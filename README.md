@@ -12,6 +12,10 @@ Dynamic Agent is a flexible and configurable AI agent framework built in Rust. I
 *   **Multi-LLM Support:** Integrates with various Large Language Model providers for chat completion, text embedding, and query generation.
     *   Supported: Ollama, OpenAI, Anthropic, Gemini, DeepSeek, XAI, Groq.
     *   Easily configurable via environment variables or CLI arguments.
+*   **Streaming and Thinking Process:** Supports both streaming responses and exposing the LLM's reasoning process.
+    *   Stream responses token by token for a responsive user experience.
+    *   Capture and stream the model's thinking process separately from the final response.
+    *   Control thinking display and duration based on client capabilities.
 *   **Multi-Vector Store Support:** Leverages the `vector-nexus` crate to connect to different vector databases for RAG.
     *   Supported: Redis, Qdrant, Chroma, Milvus, SurrealDB, Pinecone.
 *   **Configurable RAG Pipeline:**

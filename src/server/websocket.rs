@@ -247,6 +247,9 @@ pub async fn handle_connection<S>(
     let conversation_id = Uuid::new_v4().to_string();
     info!("Assigned conversation ID {} to {}", conversation_id, peer);
 
+    let mut buffer = String::new();
+    let mut in_thinking_section = false;
+
     while let Some(msg) = rx.next().await {
         match msg {
             Ok(message) => {
@@ -270,7 +273,22 @@ pub async fn handle_connection<S>(
                 match message {
                     Message::Text(text) => {
                         match serde_json::from_str::<ClientMessage>(&text) {
-                            Ok(ClientMessage::Chat { content }) => {
+                            Ok(ClientMessage::Chat { content, capabilities }) => {
+                                let client_supports_thinking = capabilities
+                                    .as_ref()
+                                    .map(|caps| caps.supports_thinking)
+                                    .unwrap_or(false);
+
+                                if client_supports_thinking {
+                                    let thinking_start = ServerMessage::Thinking { 
+                                        started: true,
+                                    };
+                                    let json = serde_json::to_string(&thinking_start).unwrap();
+                                    if let Err(e) = tx.send(Message::Text(json)).await {
+                                        error!("Error sending thinking start to {}: {}", peer, e);
+                                    }
+                                }
+
                                 let typing_msg = ServerMessage::Typing;
                                 if let Err(e) = tx.send(Message::Text(serde_json::to_string(&typing_msg).unwrap())).await {
                                     error!("Error sending typing status to {}: {}", peer, e);
@@ -287,13 +305,60 @@ pub async fn handle_connection<S>(
                                         while let Some(chunk_res) = stream.next().await {
                                             match chunk_res {
                                                 Ok(fragment) => {
-                                                    let partial = ServerMessage::Partial { 
-                                                        content: fragment 
-                                                    };
-                                                    let json = serde_json::to_string(&partial).unwrap();
-                                                    if let Err(e) = tx.send(Message::Text(json)).await {
-                                                        error!("Error sending fragment to {}: {}", peer, e);
-                                                        break;
+                                                    let text = fragment.as_str();
+                                                    buffer.push_str(text);
+                                                    
+                                                    if !in_thinking_section && buffer.contains("<think>") {
+                                                        in_thinking_section = true;
+                                                        let start_pos = buffer.find("<think>").unwrap();
+                                                        let after_tag = &buffer[start_pos + "<think>".len()..];
+                                                        let msg = ServerMessage::ThinkingFragment { 
+                                                            content: after_tag.to_string() 
+                                                        };
+                                                        tx.send(Message::Text(serde_json::to_string(&msg).unwrap())).await.unwrap();
+                                                        
+                                                        buffer = after_tag.to_string();
+                                                        continue;
+                                                    }
+                                                    
+                                                    if in_thinking_section && buffer.contains("</think>") {
+                                                        let end_pos = buffer.find("</think>").unwrap();
+                                                        let thinking_part = &buffer[..end_pos];
+                                                        
+                                                        if !thinking_part.is_empty() {
+                                                            let think_msg = ServerMessage::ThinkingFragment { 
+                                                                content: thinking_part.to_string() 
+                                                            };
+                                                            tx.send(Message::Text(serde_json::to_string(&think_msg).unwrap())).await.unwrap();
+                                                        }
+                                                        
+                                                        in_thinking_section = false;
+                                                        
+                                                        let after = &buffer[end_pos + "</think>".len()..];
+                                                        if !after.is_empty() {
+                                                            let part = ServerMessage::Partial { 
+                                                                content: after.to_string() 
+                                                            };
+                                                            tx.send(Message::Text(serde_json::to_string(&part).unwrap())).await.unwrap();
+                                                        }
+                                                        
+                                                        buffer.clear();
+                                                        continue;
+                                                    }
+                                                    
+                                                    if buffer.len() > 20 { 
+                                                        if in_thinking_section {
+                                                            let think_msg = ServerMessage::ThinkingFragment { 
+                                                                content: buffer.clone() 
+                                                            };
+                                                            tx.send(Message::Text(serde_json::to_string(&think_msg).unwrap())).await.unwrap();
+                                                        } else {
+                                                            let part = ServerMessage::Partial { 
+                                                                content: buffer.clone() 
+                                                            };
+                                                            tx.send(Message::Text(serde_json::to_string(&part).unwrap())).await.unwrap();
+                                                        }
+                                                        buffer.clear();
                                                     }
                                                 }
                                                 Err(e) => {
@@ -307,6 +372,16 @@ pub async fn handle_connection<S>(
                                                     }
                                                     break;
                                                 }
+                                            }
+                                        }
+
+                                        if !buffer.is_empty() {
+                                            if in_thinking_section {
+                                                let think_msg = ServerMessage::ThinkingFragment { content: buffer.clone() };
+                                                tx.send(Message::Text(serde_json::to_string(&think_msg).unwrap())).await.unwrap();
+                                            } else {
+                                                let part = ServerMessage::Partial { content: buffer.clone() };
+                                                tx.send(Message::Text(serde_json::to_string(&part).unwrap())).await.unwrap();
                                             }
                                         }
 
@@ -390,4 +465,37 @@ pub async fn handle_connection<S>(
         }
     }
     info!("WebSocket connection closed for {} (Conv ID: {})", peer, conversation_id);
+}
+
+async fn handle_message<S>(
+    agent: Arc<Mutex<AIAgent>>,
+    conversation_id: &str,
+    message: &str,
+    client_supports_thinking: bool,
+    socket: &mut S
+) -> Result<(), Box<dyn Error + Send + Sync>> 
+where 
+    S: SinkExt<Message> + Unpin,
+    S::Error: std::fmt::Display,
+{
+    let thinking_response = agent.lock().await.process_message(conversation_id, message).await?;
+
+    if !thinking_response.thinking.is_empty() {
+        info!("LLM Thinking: {}", thinking_response.thinking);
+    }
+
+    let response_message = if client_supports_thinking {
+        serde_json::json!({
+            "response": thinking_response.response,
+            "thinking": thinking_response.thinking
+        }).to_string()
+    } else {
+        thinking_response.response
+    };
+
+    if let Err(e) = socket.send(Message::Text(response_message)).await {
+        return Err(format!("Failed to send response: {}", e).into());
+    }
+    
+    Ok(())
 }

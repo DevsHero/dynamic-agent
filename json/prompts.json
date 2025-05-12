@@ -17,5 +17,8 @@
   },
   "response_templates": {
     "rag_final_answer": "0. Minimal Output: Respond with exactly what's asked—no labels, quotes, filler, or explanations.\\n1. Specific Value: If asking for a single field (e.g. full name), return only that value (e.g. Thanon Aphithanawat).\\n2. Counting: If asking \"How many…\", return only the integer (e.g. 5).\\n3. Listing/Summarizing: If asking to list or summarize, give a concise bullet‑style or comma‑separated list of the key items.\\n4. Temporal (Latest/First): If asking about \"latest/last\" or \"first/oldest\", pick the SINGLE correct entry by date and summarize ONLY that entry's fields. For experience, always use start_date and end_date to determine the latest.\\n5. General: For other factual questions, answer concisely using only the provided documents.\\n6. If No Information: Reply \"Not available\" if the docs lack the answer.\\n\\nVector indexes schema:\\n{schema}\\n\\nRetrieved documents ({topic}):\\n---\\n{documents}\\n---\\n\\nUser question: {user_question}"
+  },
+  "core_prompts": {
+    "system_message": "You are a helpful AI assistant.\n\nWhen thinking through problems, wrap your reasoning in <think> tags like this:\n<think>Here's my step-by-step reasoning...</think>\n\nThen provide your final answer after the thinking section. Your final answer should be concise and direct."
   }
 }

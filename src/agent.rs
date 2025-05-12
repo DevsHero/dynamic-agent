@@ -54,6 +54,11 @@ pub struct AIAgent {
     cache: CacheClients,
     prompts_path: String, 
 }
+
+pub struct ThinkingResponse {
+    pub thinking: String,
+    pub response: String
+}
  
 impl AIAgent {
     async fn initialize_llm_clients(
@@ -264,7 +269,7 @@ impl AIAgent {
         &self,
         conversation_id: &str,
         message: &str
-    ) -> Result<String, Box<dyn Error + Send + Sync>> {
+    ) -> Result<ThinkingResponse, Box<dyn Error + Send + Sync>> { 
 
         if let Ok(true) = prompt::check_local_prompt_file_changed(&self.prompts_path) {
             info!("Local prompts file changed, reloading...");
@@ -312,13 +317,13 @@ impl AIAgent {
                 
                 drop(current_prompt_config);
                 let resp = self.chat_client.complete(&final_prompt).await?;
-                Ok(resp.response)
+                Ok(parse_thinking_response(&resp.response))
             }
             "general_llm_call" => {
                 let prompt_with_history = format!("{}\n\nUser: {}", history_str, message);
                 drop(current_prompt_config);
                 let resp = self.chat_client.complete(&prompt_with_history).await?;
-                Ok(resp.response)
+                Ok(parse_thinking_response(&resp.response))  
             }
             unknown_action => {
                 Err(
@@ -336,7 +341,7 @@ impl AIAgent {
         &self,
         conversation_id: &str,
         message: &str
-    ) -> Result<String, Box<dyn Error + Send + Sync>> {
+    ) -> Result<ThinkingResponse, Box<dyn Error + Send + Sync>> {  
         let normalized = message.trim().to_lowercase();
         info!("ℹ️ Normalized message for cache lookup: '{}'", normalized);
 
@@ -347,22 +352,25 @@ impl AIAgent {
                 info!("✅ Cache Hit");
                 self.history_store.add_message(conversation_id, "user", message).await?;
                 self.history_store.add_message(conversation_id, "assistant", &resp).await?;
-                return Ok(resp.to_string());
+                return Ok(ThinkingResponse {
+                    thinking: String::new(),
+                    response: resp.to_string(),
+                });
             }
         }
 
         info!("ℹ️ Cache Miss. Proceeding with LLM call…");
-        let reply = self.execute_llm_interaction(conversation_id, message).await?;
+        let thinking_response = self.execute_llm_interaction(conversation_id, message).await?;
 
         if self.enable_cache {
             let emb_to_use = self.embedding_client.embed(&normalized).await?.embedding;
-            cache::update(&self.cache, &normalized, &reply, emb_to_use).await?;
+            cache::update(&self.cache, &normalized, &thinking_response.response, emb_to_use).await?;
         }
 
         self.history_store.add_message(conversation_id, "user", message).await?;
-        self.history_store.add_message(conversation_id, "assistant", &reply).await?;
+        self.history_store.add_message(conversation_id, "assistant", &thinking_response.response).await?;
 
-        Ok(reply)
+        Ok(thinking_response)
     }
 
     pub async fn reload_prompts_if_changed(
@@ -496,5 +504,23 @@ impl AIAgent {
             },
             Err(e) => Err(Box::new(e)),
         }
+    }
+}
+
+fn parse_thinking_response(full_response: &str) -> ThinkingResponse {
+    if let Some(thinking_start) = full_response.find("<think>") {
+        if let Some(thinking_end) = full_response.find("</think>") {
+            let thinking = &full_response[thinking_start + 7..thinking_end];
+            let response = &full_response[thinking_end + 8..].trim_start();
+            return ThinkingResponse {
+                thinking: thinking.to_string(),
+                response: response.to_string(),
+            };
+        }
+    }
+    
+    ThinkingResponse {
+        thinking: String::new(),
+        response: full_response.to_string(),
     }
 }

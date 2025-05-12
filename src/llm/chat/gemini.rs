@@ -216,7 +216,7 @@ impl ChatClient for GeminiChatClient {
         .await
         {
             Ok(stream) => Ok(stream),
-            Err(e) => { 
+            Err(_e) => { 
                 let resp = self.complete(prompt).await?;
                 let text = resp.response;
                 let (tx, rx) = mpsc::channel(1);
