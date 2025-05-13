@@ -16,6 +16,7 @@ Dynamic Agent is a flexible and configurable AI agent framework built in Rust. I
     *   Stream responses token by token for a responsive user experience.
     *   Capture and stream the model's thinking process separately from the final response.
     *   Control thinking display and duration based on client capabilities.
+*   **GitHub Flavored Markdown Support:** LLM responses can be formatted using GitHub Flavored Markdown, enabling rich text rendering on compatible frontends (e.g., code blocks, lists, bold/italics, tables).
 *   **Multi-Vector Store Support:** Leverages the `vector-nexus` crate to connect to different vector databases for RAG.
     *   Supported: Redis, Qdrant, Chroma, Milvus, SurrealDB, Pinecone.
 *   **Configurable RAG Pipeline:**
@@ -156,6 +157,7 @@ An HTTP GET endpoint is available to manually trigger a reload of prompt configu
     *   `source`: (Optional) Specifies which prompts to reload.
         *   `local`: Reloads only from the local file specified by `PROMPTS_PATH`.
         *   `remote`: Reloads only from Firebase Remote Config (if `ENABLE_REMOTE_PROMPTS` is true).
+        *   If omitted, reloads from all configured sources.
        
 
 **How to Use the Webhook:**
@@ -396,9 +398,9 @@ We offer two Docker Compose setups:
     ```
     **Note on Webhook Authentication:** The `/api/reload-prompts` webhook endpoint for reloading prompts is currently unauthenticated. Ensure appropriate network security if exposing this endpoint publicly.
 
-3.  **Send Messages:** Send user queries as messages over the WebSocket connection. The expected format is typically a simple text message or a JSON structure depending on the client implementation (e.g., `{"type": "message", "payload": "Tell me about your experience."}`).
+3.  **Send Messages:** Send user queries as messages over the WebSocket connection. The expected format is typically a simple text message or a JSON structure depending on the client implementation (e.g., `{"type": "chat", "content": "Tell me about your experience."}`).
 
-4.  **Receive Responses:** The agent will process the message, potentially performing RAG and LLM calls, and send the response back over the same WebSocket connection.
+4.  **Receive Responses:** The agent will process the message, potentially performing RAG and LLM calls, and send the response back over the same WebSocket connection. Responses may include GitHub Flavored Markdown for rich text rendering.
 
 ## Contributing
 

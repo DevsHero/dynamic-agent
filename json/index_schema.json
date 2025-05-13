@@ -9,27 +9,6 @@
     },
     {
       "fields": [
-        "admin_password",
-        "config",
-        "table"
-      ],
-      "name": "config",
-      "prefix": "qdrant:config"
-    },
-    {
-      "fields": [
-        "contact",
-        "contact_icon",
-        "contact_title",
-        "contact_value",
-        "table",
-        "use_link"
-      ],
-      "name": "contact",
-      "prefix": "qdrant:contact"
-    },
-    {
-      "fields": [
         "conversation_id",
         "timestamp"
       ],
@@ -38,98 +17,11 @@
     },
     {
       "fields": [
-        "degree",
-        "gpa",
-        "graduated_year",
-        "institute_address",
-        "institute_logo_url",
-        "institute_name",
-        "major",
-        "table"
-      ],
-      "name": "education",
-      "prefix": "qdrant:education"
-    },
-    {
-      "fields": [
-        "company_address",
-        "company_logo_url",
-        "company_name",
-        "company_url",
-        "describe",
-        "describe_pdf_data",
-        "end_date",
-        "experience",
-        "position_name",
-        "start_date",
-        "table",
-        "use_describe_pdf_version"
-      ],
-      "name": "experience",
-      "prefix": "qdrant:experience"
-    },
-    {
-      "fields": [
-        "level",
-        "name",
-        "table"
-      ],
-      "name": "language",
-      "prefix": "qdrant:language"
-    },
-    {
-      "fields": [
-        "index",
-        "is_opensource",
-        "portfolio_detail",
-        "portfolio_detail_pdf_data",
-        "portfolio_icon_url",
-        "portfolio_link",
-        "portfolio_name",
-        "screenshots_url",
-        "stacks",
-        "table",
-        "use_portfolio_detail_pdf_version",
-        "uuid"
-      ],
-      "name": "portfolio",
-      "prefix": "qdrant:portfolio"
-    },
-    {
-      "fields": [
-        "about",
-        "address",
-        "avatar",
-        "birth_date",
-        "first_name",
-        "gender",
-        "last_name",
-        "nationality",
-        "nick_name",
-        "pdf",
-        "role",
-        "table"
-      ],
-      "name": "profile",
-      "prefix": "qdrant:profile"
-    },
-    {
-      "fields": [
         "normalized_prompt",
         "response"
       ],
       "name": "prompt_response_cache",
       "prefix": "qdrant:prompt_response_cache"
-    },
-    {
-      "fields": [
-        "level",
-        "name",
-        "skill",
-        "table"
-      ],
-      "name": "skill",
-      "prefix": "qdrant:skill"
     }
   ]
 }

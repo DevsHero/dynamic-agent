@@ -72,6 +72,26 @@ pub async fn search(
     None
 }
 
+pub async fn check_qdrant_response(
+    client: &Option<Arc<Qdrant>>,
+    collection: &str,
+    embedding: Vec<f32>,
+    threshold: f32,
+) -> Result<Option<(String, Vec<f32>)>, Box<dyn std::error::Error>> {
+    if let Some((response, embedding)) = search(client, collection, embedding, threshold).await {
+        if response.starts_with('{') && response.contains("\"response\"") {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&response) {
+                if let Some(actual_response) = parsed.get("response").and_then(|v| v.as_str()) {
+                    return Ok(Some((actual_response.to_string(), embedding)));
+                }
+            }
+        }
+        
+        return Ok(Some((response, embedding)));
+    }
+    Ok(None)
+}
+
 pub async fn upsert(
     client: &Option<Arc<Qdrant>>,
     collection: &str,

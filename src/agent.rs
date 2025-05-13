@@ -163,23 +163,135 @@ impl AIAgent {
         };
         create_vector_store(vector_store_config.clone()).await
     }
-  pub async fn process_message_stream(
+
+    pub async fn process_message_stream(
         &self,
         conversation_id: &str,
         message: &str,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Box<dyn std::error::Error + Send + Sync>>> + Send>>, Box<dyn std::error::Error + Send + Sync>> {
+        let normalized = message.trim().to_lowercase();
+        info!("ℹ️ Normalized message for cache lookup: '{}'", normalized);
+
+        if self.enable_cache {
+            if let Some((cached_response, _emb)) = cache::check(&self.cache, &normalized, &*self.embedding_client).await? {
+                info!("✅ Cache Hit - serving from cache");
+                
+                self.history_store.add_message(conversation_id, "user", message).await?;
+                self.history_store.add_message(conversation_id, "assistant", &cached_response).await?;
+                
+                if cached_response.starts_with('{') && 
+                   cached_response.contains("\"response\"") && 
+                   cached_response.contains("\"thinking\"") {
+                    
+                    if let Ok(cached_json) = serde_json::from_str::<serde_json::Value>(&cached_response) {
+                        let response = cached_json.get("response")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| cached_response.clone());
+                            
+                        let thinking = cached_json.get("thinking")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| String::new());
+                        
+                         if !thinking.is_empty() {
+                            let sequence = vec![
+                                Ok(format!("<think>{}</think>", thinking)), 
+                                Ok(response)
+                            ];
+                            
+                            let stream = futures::stream::iter(sequence);
+                            return Ok(Box::pin(stream));
+                        }
+                        
+                        let cached_stream = futures::stream::once(async move { Ok(response) });
+                        return Ok(Box::pin(cached_stream));
+                    }
+                }
+                
+                let cached_response_owned = cached_response.clone();
+                let cached_stream = futures::stream::once(async move { Ok(cached_response_owned) });
+                return Ok(Box::pin(cached_stream));
+            }
+        }
+
+        info!("ℹ️ Cache Miss - streaming from LLM");
+        
         let conversation = self.history_store.get_conversation(
             conversation_id,
             HISTORY_FOR_PROMPT_LEN
         ).await?;
         let history_str = format_history_for_prompt(&conversation);
         let final_prompt = format!("{}\n\nUser: {}", history_str, message);
+        let original_stream = self.chat_client.stream_completion(&final_prompt).await?;
+        let collected_normalized = normalized.clone();
+        let collected_conversation_id = conversation_id.to_string();
+        let collected_message = message.to_string();
+        let collected_self = self.clone();
         
-        let stream = self.chat_client.stream_completion(&final_prompt).await?
-            .map_err(|e| e);
-        let boxed_stream: Pin<Box<dyn Stream<Item = Result<String, Box<dyn std::error::Error + Send + Sync>>> + Send>> = Box::pin(stream);
-        Ok(boxed_stream)
+        let stream = futures::stream::unfold(
+            (original_stream, String::new()),
+            move |(mut stream, mut full_response)| {
+                let collected_normalized = collected_normalized.clone();
+                let collected_self = collected_self.clone();
+                let collected_conversation_id = collected_conversation_id.clone();
+                let collected_message = collected_message.clone();
+                
+                async move {
+                    match stream.try_next().await {
+                        Ok(Some(chunk)) => {
+                            full_response.push_str(&chunk);
+                            Some((Ok(chunk), (stream, full_response)))
+                        }
+                        Ok(None) => {
+                            if collected_self.enable_cache {
+                                let _ = async {
+                                    match collected_self.embedding_client.embed(&collected_normalized).await {
+                                        Ok(emb) => {
+                                            let thinking_response = parse_thinking_response(&full_response);
+                                            let thinking = if thinking_response.thinking.is_empty() { 
+                                                None 
+                                            } else { 
+                                                Some(thinking_response.thinking.as_str()) 
+                                            };
+                                            
+                                            if let Err(e) = cache::update_streaming(
+                                                &collected_self.cache, 
+                                                &collected_normalized, 
+                                                &thinking_response.response, 
+                                                thinking,
+                                                emb.embedding
+                                            ).await {
+                                                warn!("Failed to update streaming cache: {}", e);
+                                            } else {
+                                                info!("✅ Cache updated with streaming response");
+                                            }
+                                        }
+                                        Err(e) => warn!("Failed to generate embedding for cache: {}", e),
+                                    }
+                                    
+                                    if let Err(e) = collected_self.history_store
+                                        .add_message(&collected_conversation_id, "user", &collected_message).await {
+                                        warn!("Failed to add user message to history: {}", e);
+                                    }
+                                    
+                                    if let Err(e) = collected_self.history_store
+                                        .add_message(&collected_conversation_id, "assistant", &full_response).await {
+                                        warn!("Failed to add assistant message to history: {}", e);
+                                    }
+                                }.await;
+                            }
+                            None
+                        }
+                        Err(e) => Some((Err(e), (stream, full_response))),
+                    }
+                }
+            },
+        );
+        
+        Ok(Box::pin(stream))
     }
+
     async fn load_configs_and_schemas(
         args: &Args,
         vector_store: &Arc<dyn VectorStore>

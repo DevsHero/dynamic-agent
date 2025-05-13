@@ -6,3 +6,4 @@ json/index_schema.json
 .idea/
 firebaseKey.json
 qdrant_storage
+json/index_schema.json
