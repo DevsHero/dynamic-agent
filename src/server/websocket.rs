@@ -1,7 +1,6 @@
 use crate::agent::AIAgent;
 use crate::cli::Args;
 use crate::models::websocket::{ClientMessage, ServerMessage};
-
 use std::error::Error;
 use std::fs::File;
 use std::io::BufReader;
@@ -9,36 +8,28 @@ use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::collections::HashMap;
-
 use tokio::sync::Mutex;
 use tokio::net::TcpListener;
 use tokio::io::{AsyncRead, AsyncWrite};
-
 use tokio_tungstenite::{accept_hdr_async, WebSocketStream};
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response, ErrorResponse};
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_rustls::TlsAcceptor;
-
 use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls_pemfile::{certs, pkcs8_private_keys};
-
 use lazy_static::lazy_static;
 use governor::{RateLimiter, Quota, state::{InMemoryState, NotKeyed}, clock::DefaultClock};
-
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use chrono::Utc;
 use hex;
 use url::form_urlencoded;
-
 use log::{info, warn, error};
 use futures::{SinkExt, StreamExt};
 use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
-
-const MAX_MESSAGE_SIZE: usize = 1 * 1024 * 1024;
 
 lazy_static! {
     static ref CONNECTION_LIMITER: RateLimiter<NotKeyed, InMemoryState, DefaultClock> =
@@ -133,6 +124,7 @@ pub async fn start_ws_server(
         let agent_clone = Arc::clone(&agent);
         let required_api_key = api_key.clone();
         let tls_acceptor_clone = tls_acceptor.clone();
+        let max_message_size = args.max_message_size;
 
         tokio::spawn(async move {
             let process_result = if let Some(acceptor) = tls_acceptor_clone {
@@ -143,7 +135,8 @@ pub async fn start_ws_server(
                             peer,
                             tls_stream,
                             agent_clone,
-                            required_api_key
+                            required_api_key,
+                            max_message_size
                         ).await
                     }
                     Err(e) => {
@@ -152,7 +145,13 @@ pub async fn start_ws_server(
                     }
                 }
             } else {
-                process_connection(peer, stream, agent_clone, required_api_key).await
+                process_connection(
+                    peer, 
+                    stream, 
+                    agent_clone, 
+                    required_api_key, 
+                    max_message_size
+                ).await
             };
 
             if let Err(e) = process_result {
@@ -166,7 +165,8 @@ async fn process_connection<S>(
     peer: SocketAddr,
     stream: S,
     agent_clone: Arc<Mutex<AIAgent>>,
-    required_api_key: Option<String>
+    required_api_key: Option<String>,
+    max_message_size: usize
 ) -> Result<(), Box<dyn Error + Send + Sync>>
     where S: AsyncRead + AsyncWrite + Unpin + Send + 'static
 {
@@ -224,7 +224,7 @@ async fn process_connection<S>(
 
     match accept_hdr_async(stream, auth_callback).await {
         Ok(ws) => {
-            handle_connection(peer, ws, agent_clone).await;
+            handle_connection(peer, ws, agent_clone, max_message_size).await;
             Ok(())
         }
         Err(e) => {
@@ -237,7 +237,8 @@ async fn process_connection<S>(
 pub async fn handle_connection<S>(
     peer: SocketAddr,
     websocket: WebSocketStream<S>,
-    agent: Arc<Mutex<AIAgent>>
+    agent: Arc<Mutex<AIAgent>>,
+    max_message_size: usize
 )
     where S: AsyncRead + AsyncWrite + Unpin
 {
@@ -255,12 +256,12 @@ pub async fn handle_connection<S>(
     while let Some(msg) = rx.next().await {
         match msg {
             Ok(message) => {
-                if message.len() > MAX_MESSAGE_SIZE {
+                if message.len() > max_message_size {
                     warn!(
                         "Message from {} exceeds size limit ({} > {})",
                         peer,
                         message.len(),
-                        MAX_MESSAGE_SIZE
+                        max_message_size
                     );
                     let error_msg = ServerMessage::Error {
                         message: "Message too large".to_string(),
