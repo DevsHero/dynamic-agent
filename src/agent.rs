@@ -170,12 +170,12 @@ impl AIAgent {
         message: &str,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Box<dyn std::error::Error + Send + Sync>>> + Send>>, Box<dyn std::error::Error + Send + Sync>> {
         let normalized = message.trim().to_lowercase();
-        info!("ℹ️ Normalized message for cache lookup: '{}'", normalized);
+        
 
         if self.enable_cache {
             if let Some((cached_response, _emb)) = cache::check(&self.cache, &normalized, &*self.embedding_client).await? {
                 info!("✅ Cache Hit - serving from cache");
-                
+
                 self.history_store.add_message(conversation_id, "user", message).await?;
                 self.history_store.add_message(conversation_id, "assistant", &cached_response).await?;
                 
@@ -455,7 +455,7 @@ impl AIAgent {
         message: &str
     ) -> Result<ThinkingResponse, Box<dyn Error + Send + Sync>> {  
         let normalized = message.trim().to_lowercase();
-        info!("ℹ️ Normalized message for cache lookup: '{}'", normalized);
+      
 
         if self.enable_cache {
             if let Some((resp, _emb)) =
