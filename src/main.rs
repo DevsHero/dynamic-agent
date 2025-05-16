@@ -1,13 +1,12 @@
 use clap::Parser;
 use dynamic_agent::cli::Args;
 use dotenv::dotenv;
-// pull in the ring provider
 use rustls::crypto::ring;
 use std::error::Error;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
-    // install the default ring‐based provider for all rustls crypto ops
+
     ring::default_provider()
         .install_default()
         .expect("crypto provider already installed");

@@ -33,9 +33,8 @@ pub async fn check(
     normalized: &str,
     embedding_client: &dyn EmbeddingClient,
 ) -> Result<Option<(String, Vec<f32>)>, Box<dyn std::error::Error + Send + Sync>> {
-    // Try Redis first
+
     if let Some(val) = redis::get(&clients.redis, normalized).await? {
-        // Check if Redis value is JSON with response field
         if val.starts_with('{') && val.contains("\"response\"") {
             if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&val) {
                 if let Some(response) = json_val.get("response").and_then(|v| v.as_str()) {
